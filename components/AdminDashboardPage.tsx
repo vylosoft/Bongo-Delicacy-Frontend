@@ -42,6 +42,11 @@ import {
   apiAddDeliveryCharge,
   apiDeleteDeliveryCharge,
   apiUpdateDeliveryCharge,
+  apiGetAllDiscounts,
+  apiUpdateDiscount,
+  apiAddDiscount,
+  apiDeleteDiscount,
+  apiUpdateMenuItemTags,
 
 } from "../services/apiService";
 import {
@@ -51,6 +56,7 @@ import {
   SUPABASE_URL,
 } from "../src/config";
 import { supabase } from "../services/supabaseClient";
+import OutletTimingsModal from "./OutletTimingsModal";
 
 const Spinner: React.FC<{ className?: string }> = ({
   className = "h-5 w-5",
@@ -91,6 +97,7 @@ const AdminDashboardPage: React.FC = () => {
     | "deliveryPoints"
     | "deliveryCharges"
     | "webhookLogs"
+    | "discount"
   >("menu");
   const [selectedWebhookLog, setSelectedWebhookLog] = useState<any | null>(null);
   const [editId, setEditId] = useState<string | null>(null);
@@ -101,6 +108,64 @@ const AdminDashboardPage: React.FC = () => {
   const [loadingCharges, setLoadingCharges] = useState(false);
   // Menu State
   const [menu, setMenu] = useState<any[] | null>(null);
+  const [tagModalItem, setTagModalItem] = useState<any | null>(null);
+  const [cuisineTag, setCuisineTag] = useState("");
+  const [moodTag, setMoodTag] = useState("");
+  const [isSavingTags, setIsSavingTags] = useState(false);
+  const [tagError, setTagError] = useState<string | null>(null);
+  // 1. Add state
+  const [deliveryFailureOrder, setDeliveryFailureOrder] = useState<any | null>(null);
+  const CUISINE_TAG_OPTIONS = [
+    { value: "", label: "— None —" },
+    { value: "pure_veg", label: "Pure Veg" },
+    { value: "authentic_bengali", label: "Authentic Bengali" },
+    { value: "indo_chinese", label: "Indo-Chinese" },
+    { value: "biryani", label: "Biryani" },
+  ];
+
+  const MOOD_TAG_OPTIONS = [
+    { value: "", label: "— None —" },
+    { value: "light", label: "Light" },
+    { value: "spicy", label: "Spicy" },
+    { value: "comfort", label: "Comfort" },
+    { value: "special", label: "Special" },
+  ];
+
+  const openTagModal = (item: any) => {
+    setTagModalItem(item);
+    setCuisineTag(item.cuisine_tag || "");
+    setMoodTag(item.mood_tag || "");
+    setTagError(null);
+  };
+
+  const handleSaveTags = async () => {
+    if (!tagModalItem) return;
+
+    setIsSavingTags(true);
+    setTagError(null);
+
+    try {
+      const res = await apiUpdateMenuItemTags({
+        resturent_identifier: selectedRestaurantId,
+        item_id: tagModalItem.itemid,
+        cuisine_tag: cuisineTag || null,
+        mood_tag: moodTag || null,
+      });
+
+      if (res?.error) {
+        setTagError(res.message || "Failed to save tags");
+        return;
+      }
+
+      setTagModalItem(null);
+      await fetchMenu(selectedRestaurantId);
+    } catch (err) {
+      setTagError("Something went wrong");
+    } finally {
+      setIsSavingTags(false);
+    }
+  };
+
   const [isOutletModalOpen, setIsOutletModalOpen] = useState(false);
   const [selectedBrand, setSelectedBrand] = useState<any>(null);
   const [brandOutletsModal, setBrandOutletsModal] = useState<{ brand: any, outlets: any[] } | null>(null);
@@ -110,36 +175,36 @@ const AdminDashboardPage: React.FC = () => {
     outlet_id: ""
   });
   const WebhookLogBlock: React.FC<{ label: string; value: any }> = ({ label, value }) => {
-  const [copied, setCopied] = React.useState(false);
-  const text = value ? JSON.stringify(value, null, 2) : null;
+    const [copied, setCopied] = React.useState(false);
+    const text = value ? JSON.stringify(value, null, 2) : null;
 
-  const handleCopy = () => {
-    if (!text) return;
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
+    const handleCopy = () => {
+      if (!text) return;
+      navigator.clipboard.writeText(text).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      });
+    };
 
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-1">
-        <p className="text-xs text-gray-500">{label}</p>
-        {text && (
-          <button
-            onClick={handleCopy}
-            className="text-xs text-cyan-400 hover:underline"
-          >
-            {copied ? "✓ Copied" : "Copy"}
-          </button>
-        )}
+    return (
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <p className="text-xs text-gray-500">{label}</p>
+          {text && (
+            <button
+              onClick={handleCopy}
+              className="text-xs text-cyan-400 hover:underline"
+            >
+              {copied ? "✓ Copied" : "Copy"}
+            </button>
+          )}
+        </div>
+        <pre className="text-xs bg-gray-800 text-gray-300 p-3 rounded-lg overflow-auto max-h-52 whitespace-pre-wrap break-all border border-gray-700">
+          {text ?? "—"}
+        </pre>
       </div>
-      <pre className="text-xs bg-gray-800 text-gray-300 p-3 rounded-lg overflow-auto max-h-52 whitespace-pre-wrap break-all border border-gray-700">
-        {text ?? "—"}
-      </pre>
-    </div>
-  );
-};
+    );
+  };
   const [showDeliveryModal, setShowDeliveryModal] = useState(false);
   const [selectedDelivery, setSelectedDelivery] = useState<{
     name?: string;
@@ -283,6 +348,15 @@ const AdminDashboardPage: React.FC = () => {
       setIsLoadingBrandOutlets(false);
     }
   };
+  const handleDeleteDiscount = async (id: string) => {
+    if (!window.confirm("Delete this discount code?")) return;
+    try {
+      await apiDeleteDiscount(id);
+      fetchDiscounts();
+    } catch (err) {
+      console.error("Delete discount failed:", err);
+    }
+  };
   const handleAddOutlet = async () => {
     if (!newOutletRow.outlet_id || !newOutletRow.location_id) {
       setAddOutletError("Select outlet and location");
@@ -337,7 +411,7 @@ const AdminDashboardPage: React.FC = () => {
   );
   // Restaurants dropdown for Live Menu
   const [restaurantOptions, setRestaurantOptions] = useState<
-    { rest_id: string; name: string; city: string }[]
+    { rest_id: string; name: string; city: string, brand_name: string; }[]
   >([]);
   const [selectedRestaurantId, setSelectedRestaurantId] = useState<string>("");
   const [isLoadingRestaurantOptions, setIsLoadingRestaurantOptions] =
@@ -403,6 +477,15 @@ const AdminDashboardPage: React.FC = () => {
   const [deliveryPoints, setDeliveryPoints] = useState<any[]>([]);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
+  const [discounts, setDiscounts] = useState<any[]>([]);
+  const [isLoadingDiscounts, setIsLoadingDiscounts] = useState(false);
+  const [discountModal, setDiscountModal] = useState<{ mode: "add" | "edit"; data?: any } | null>(null);
+  const [discountCode, setDiscountCode] = useState("");
+  const [discountPercentage, setDiscountPercentage] = useState("");
+  const [isSavingDiscount, setIsSavingDiscount] = useState(false);
+  const [discountError, setDiscountError] = useState<string | null>(null);
+  const [copiedDiscountId, setCopiedDiscountId] = useState<string | null>(null);
+
   // useEffect(() => {
   //   const brands = apiGetAllBrands(); // already synchronous in your code
   //   if (!selectedBrandId && brands.length > 0) {
@@ -426,6 +509,7 @@ const AdminDashboardPage: React.FC = () => {
   const [tableError, setTableError] = useState<string | null>(null);
   const [tables, setTables] = useState<any[]>([]);
   const [showTablesFor, setShowTablesFor] = useState<any | null>(null);
+  const [timingsModalOutlet, setTimingsModalOutlet] = useState<any | null>(null);
   const [loadingTables, setLoadingTables] = useState(false);
   const [AllOutlet, setAllOutlet] = useState<any[]>([]);
   const [showOutlet, setshowOutlet] = useState<string | null>(null);
@@ -737,6 +821,83 @@ const AdminDashboardPage: React.FC = () => {
     setThemeText(res.data.theme_text_on_primary || "#FFFFFF");
     setLoadingTables(false);
   }
+  const fetchDiscounts = useCallback(async () => {
+    setIsLoadingDiscounts(true);
+    try {
+      const res = await apiGetAllDiscounts(1, 100);
+      setDiscounts(res?.data?.result || []);
+    } catch (err) {
+      console.error("fetchDiscounts:", err);
+    } finally {
+      setIsLoadingDiscounts(false);
+    }
+  }, []);
+
+  const openAddDiscount = () => {
+    setDiscountCode("");
+    setDiscountPercentage("");
+    setDiscountError(null);
+    setDiscountModal({ mode: "add" });
+  };
+
+  const openEditDiscount = (item: any) => {
+    setDiscountCode(item.discount_code);
+    setDiscountPercentage(String(item.discount_percentage));
+    setDiscountError(null);
+    setDiscountModal({ mode: "edit", data: item });
+  };
+
+  const handleSaveDiscount = async () => {
+    const pct = parseFloat(discountPercentage);
+
+    if (!discountCode.trim()) {
+      setDiscountError("Discount code is required.");
+      return;
+    }
+    if (isNaN(pct) || pct < 0 || pct > 100) {
+      setDiscountError("Percentage must be between 0 and 100.");
+      return;
+    }
+
+    setIsSavingDiscount(true);
+    setDiscountError(null);
+
+    try {
+      let res;
+
+      if (discountModal?.mode === "edit" && discountModal.data?.id) {
+        res = await apiUpdateDiscount(discountModal.data.id, {
+          discount_code: discountCode.trim().toUpperCase(),
+          discount_percentage: pct,
+        });
+      } else {
+        res = await apiAddDiscount({
+          discount_code: discountCode.trim().toUpperCase(),
+          discount_percentage: pct,
+        });
+      }
+
+      if (res?.error || res?.status >= 400) {
+        setDiscountError(res?.message || "Save failed.");
+        return;
+      }
+
+      setDiscountModal(null);
+      fetchDiscounts();
+    } catch (err) {
+      setDiscountError("Something went wrong.");
+    } finally {
+      setIsSavingDiscount(false);
+    }
+  };
+
+  const handleCopyCode = (id: string, code: string) => {
+    navigator.clipboard.writeText(code).then(() => {
+      setCopiedDiscountId(id);
+      setTimeout(() => setCopiedDiscountId(null), 2000);
+    });
+  };
+
   const fetchBrands = useCallback(async () => {
     setIsLoadingRestaurants(true);
     try {
@@ -870,8 +1031,8 @@ const AdminDashboardPage: React.FC = () => {
         rest_id: o.petpooja_outlet_id,
         name: o?.name,
         city: o?.city,
+        brand_name: o?.brand_name || "",
       }));
-
       setRestaurantOptions(list);
 
       if (!selectedRestaurantId && list.length > 0) {
@@ -1536,6 +1697,15 @@ const AdminDashboardPage: React.FC = () => {
             Delivery Points
           </button>
           <button
+            onClick={() => setActiveTab("discount")}
+            className={`flex-shrink-0 py-2 px-4 font-semibold ${activeTab === "discount"
+              ? "border-b-2 border-cyan-400 text-cyan-400"
+              : "text-gray-400"
+              }`}
+          >
+            Discounts
+          </button>
+          <button
             onClick={() =>
               setActiveTab(
                 "deliveryCharges"
@@ -1576,7 +1746,7 @@ const AdminDashboardPage: React.FC = () => {
                     .filter((r) => r.rest_id)
                     .map((r) => (
                       <option key={r.rest_id} value={r.rest_id}>
-                        {r.name ?? "Unknown Outlet"} ({r.city})
+                        {r.brand_name ?? "Unknown Outlet"} ({r.city})
                       </option>
                     ))
                 )}
@@ -1603,19 +1773,43 @@ const AdminDashboardPage: React.FC = () => {
                         category.items.map((item: any) => (
                           <li
                             key={item.name}
-                            className="flex items-center justify-between bg-gray-900/50 p-2 rounded-md"
+                            className="flex items-center justify-between gap-2 bg-gray-900/50 p-2 rounded-md"
                           >
-                            <span className="text-sm">{item.name}</span>
+                            <div className="flex-1 min-w-0">
+                              <span className="text-sm block truncate">{item.name}</span>
+                              {(item.cuisine_tag || item.mood_tag) && (
+                                <div className="flex gap-1 mt-1">
+                                  {item.cuisine_tag && (
+                                    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-cyan-900 text-cyan-300">
+                                      {item.cuisine_tag.replaceAll("_", " ")}
+                                    </span>
+                                  )}
+                                  {item.mood_tag && (
+                                    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-900 text-purple-300">
+                                      {item.mood_tag}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
 
-                            <button
-                              // onClick={() => handleToggleAvailability(item.name)}
-                              className={`px-2 py-1 text-xs font-bold rounded transition-colors ${item.isAvailable
-                                ? "bg-green-900 text-green-300 hover:bg-green-800"
-                                : "bg-red-900 text-red-300 hover:bg-red-800"
-                                }`}
-                            >
-                              {item.isAvailable ? "In Stock" : "Unavailable"}
-                            </button>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                onClick={() => openTagModal(item)}
+                                className="px-2 py-1 text-xs font-bold rounded bg-gray-700 hover:bg-gray-600 text-gray-200"
+                              >
+                                {item.cuisine_tag || item.mood_tag ? "Edit Tags" : "Add Tag"}
+                              </button>
+
+                              <button
+                                className={`px-2 py-1 text-xs font-bold rounded transition-colors ${item.isAvailable
+                                  ? "bg-green-900 text-green-300 hover:bg-green-800"
+                                  : "bg-red-900 text-red-300 hover:bg-red-800"
+                                  }`}
+                              >
+                                {item.isAvailable ? "In Stock" : "Unavailable"}
+                              </button>
+                            </div>
                           </li>
                         ))}
                     </ul>
@@ -1734,144 +1928,142 @@ const AdminDashboardPage: React.FC = () => {
             )}
           </div>
         )}
-      {activeTab === "webhookLogs" && (
-  <div className="animate-fade-in">
+        {activeTab === "webhookLogs" && (
+          <div className="animate-fade-in">
 
-    {/* ── Header ── */}
-    <div className="flex justify-between items-center mb-5">
-      <h2 className="text-lg font-semibold text-white">Webhook Logs</h2>
-      <button
-        onClick={fetchWebhookLogs}
-        className="text-xs text-cyan-400 hover:underline"
-      >
-        ↻ Refresh
-      </button>
-    </div>
-
-    {/* ── List ── */}
-    {isLoadingWebhookLogs ? (
-      <div className="flex justify-center p-8">
-        <Spinner className="w-8 h-8" />
-      </div>
-    ) : webhookLogs.length === 0 ? (
-      <p className="text-center text-gray-400 py-8">No webhook hits yet.</p>
-    ) : (
-      <div className="space-y-2">
-        {webhookLogs.map((log) => (
-          <button
-            key={log.id}
-            onClick={() => setSelectedWebhookLog(log)}
-            className="w-full text-left bg-gray-800 hover:bg-gray-750 border border-gray-700 rounded-lg px-4 py-3 flex items-center gap-4 transition-colors hover:border-gray-600"
-          >
-            {/* Status pill */}
-            <span
-              className={`shrink-0 px-2.5 py-1 rounded-full text-xs font-bold ${
-                log.is_success === true
-                  ? "bg-green-900 text-green-300"
-                  : log.is_success === false
-                  ? "bg-red-900 text-red-300"
-                  : "bg-yellow-900 text-yellow-300"
-              }`}
-            >
-              {log.is_success === true
-                ? "✓ Success"
-                : log.is_success === false
-                ? "✗ Failed"
-                : "⏳ Processing"}
-            </span>
-
-            {/* URL */}
-            <span className="flex-1 text-xs font-mono text-cyan-400 truncate">
-              {log.request_url}
-            </span>
-
-            {/* Date / time */}
-            <span className="shrink-0 text-xs text-gray-400">
-              {new Date(log.created_at).toLocaleString()}
-            </span>
-
-            {/* Chevron */}
-            <span className="shrink-0 text-gray-500 text-sm">›</span>
-          </button>
-        ))}
-      </div>
-    )}
-
-    {/* ── Detail Modal ── */}
-    {selectedWebhookLog && (
-      <div
-        className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4"
-        onClick={() => setSelectedWebhookLog(null)}
-      >
-        <div
-          className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-2xl shadow-2xl max-h-[85vh] flex flex-col"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {/* Modal header */}
-          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700">
-            <div className="flex items-center gap-3">
-              <span
-                className={`px-2.5 py-1 rounded-full text-xs font-bold ${
-                  selectedWebhookLog.is_success === true
-                    ? "bg-green-900 text-green-300"
-                    : selectedWebhookLog.is_success === false
-                    ? "bg-red-900 text-red-300"
-                    : "bg-yellow-900 text-yellow-300"
-                }`}
+            {/* ── Header ── */}
+            <div className="flex justify-between items-center mb-5">
+              <h2 className="text-lg font-semibold text-white">Webhook Logs</h2>
+              <button
+                onClick={fetchWebhookLogs}
+                className="text-xs text-cyan-400 hover:underline"
               >
-                {selectedWebhookLog.is_success === true
-                  ? "✓ Success"
-                  : selectedWebhookLog.is_success === false
-                  ? "✗ Failed"
-                  : "⏳ Processing"}
-              </span>
-              <span className="text-xs text-gray-400">
-                {new Date(selectedWebhookLog.created_at).toLocaleString()}
-              </span>
-            </div>
-            <button
-              onClick={() => setSelectedWebhookLog(null)}
-              className="text-gray-400 hover:text-white text-xl leading-none"
-            >
-              ✕
-            </button>
-          </div>
-
-          {/* Modal body — scrollable */}
-          <div className="overflow-y-auto flex-1 px-6 py-5 space-y-5">
-
-            {/* URL + message */}
-            <div>
-              <p className="text-xs text-gray-500 mb-1">Endpoint</p>
-              <p className="text-sm font-mono text-cyan-400 break-all">
-                {selectedWebhookLog.request_url}
-              </p>
+                ↻ Refresh
+              </button>
             </div>
 
-            {selectedWebhookLog.message && (
-              <div>
-                <p className="text-xs text-gray-500 mb-1">Message</p>
-                <p className="text-sm text-gray-300">{selectedWebhookLog.message}</p>
+            {/* ── List ── */}
+            {isLoadingWebhookLogs ? (
+              <div className="flex justify-center p-8">
+                <Spinner className="w-8 h-8" />
+              </div>
+            ) : webhookLogs.length === 0 ? (
+              <p className="text-center text-gray-400 py-8">No webhook hits yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {webhookLogs.map((log) => (
+                  <button
+                    key={log.id}
+                    onClick={() => setSelectedWebhookLog(log)}
+                    className="w-full text-left bg-gray-800 hover:bg-gray-750 border border-gray-700 rounded-lg px-4 py-3 flex items-center gap-4 transition-colors hover:border-gray-600"
+                  >
+                    {/* Status pill */}
+                    <span
+                      className={`shrink-0 px-2.5 py-1 rounded-full text-xs font-bold ${log.is_success === true
+                        ? "bg-green-900 text-green-300"
+                        : log.is_success === false
+                          ? "bg-red-900 text-red-300"
+                          : "bg-yellow-900 text-yellow-300"
+                        }`}
+                    >
+                      {log.is_success === true
+                        ? "✓ Success"
+                        : log.is_success === false
+                          ? "✗ Failed"
+                          : "⏳ Processing"}
+                    </span>
+
+                    {/* URL */}
+                    <span className="flex-1 text-xs font-mono text-cyan-400 truncate">
+                      {log.request_url}
+                    </span>
+
+                    {/* Date / time */}
+                    <span className="shrink-0 text-xs text-gray-400">
+                      {new Date(log.created_at).toLocaleString()}
+                    </span>
+
+                    {/* Chevron */}
+                    <span className="shrink-0 text-gray-500 text-sm">›</span>
+                  </button>
+                ))}
               </div>
             )}
 
-            {/* Request body */}
-            <WebhookLogBlock
-              label="Request Body"
-              value={selectedWebhookLog.request_body}
-            />
+            {/* ── Detail Modal ── */}
+            {selectedWebhookLog && (
+              <div
+                className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4"
+                onClick={() => setSelectedWebhookLog(null)}
+              >
+                <div
+                  className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-2xl shadow-2xl max-h-[85vh] flex flex-col"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {/* Modal header */}
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700">
+                    <div className="flex items-center gap-3">
+                      <span
+                        className={`px-2.5 py-1 rounded-full text-xs font-bold ${selectedWebhookLog.is_success === true
+                          ? "bg-green-900 text-green-300"
+                          : selectedWebhookLog.is_success === false
+                            ? "bg-red-900 text-red-300"
+                            : "bg-yellow-900 text-yellow-300"
+                          }`}
+                      >
+                        {selectedWebhookLog.is_success === true
+                          ? "✓ Success"
+                          : selectedWebhookLog.is_success === false
+                            ? "✗ Failed"
+                            : "⏳ Processing"}
+                      </span>
+                      <span className="text-xs text-gray-400">
+                        {new Date(selectedWebhookLog.created_at).toLocaleString()}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setSelectedWebhookLog(null)}
+                      className="text-gray-400 hover:text-white text-xl leading-none"
+                    >
+                      ✕
+                    </button>
+                  </div>
 
-            {/* Response body */}
-            <WebhookLogBlock
-              label="Response Body"
-              value={selectedWebhookLog.response_body}
-            />
+                  {/* Modal body — scrollable */}
+                  <div className="overflow-y-auto flex-1 px-6 py-5 space-y-5">
+
+                    {/* URL + message */}
+                    <div>
+                      <p className="text-xs text-gray-500 mb-1">Endpoint</p>
+                      <p className="text-sm font-mono text-cyan-400 break-all">
+                        {selectedWebhookLog.request_url}
+                      </p>
+                    </div>
+
+                    {selectedWebhookLog.message && (
+                      <div>
+                        <p className="text-xs text-gray-500 mb-1">Message</p>
+                        <p className="text-sm text-gray-300">{selectedWebhookLog.message}</p>
+                      </div>
+                    )}
+
+                    {/* Request body */}
+                    <WebhookLogBlock
+                      label="Request Body"
+                      value={selectedWebhookLog.request_body}
+                    />
+
+                    {/* Response body */}
+                    <WebhookLogBlock
+                      label="Response Body"
+                      value={selectedWebhookLog.response_body}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-      </div>
-    )}
-  </div>
-)}
+        )}
         {activeTab === "deliveryCharges" && (
           <div className="space-y-6">
 
@@ -2159,7 +2351,14 @@ justify-center
                                 📍 Track
                               </button>
                             )}
-
+                            {o.delivery_message && o.delivery_message.status === false && (
+                              <button
+                                onClick={() => setDeliveryFailureOrder(o)}
+                                className="bg-yellow-600 hover:bg-yellow-500 text-white px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1"
+                              >
+                                ⚠️ uEngage
+                              </button>
+                            )}
                             {/* 🔴 EXISTING CANCEL / REFUND LOGIC */}
                             {o.refundAmount != null ? (
                               <span className="text-xs font-bold text-green-400">
@@ -2333,7 +2532,146 @@ justify-center
             )}
           </div>
         )}
+        {activeTab === "discount" && (
+          <div className="animate-fade-in">
 
+            {/* Header */}
+            <div className="flex justify-between items-center mb-5">
+              <h2 className="text-lg font-semibold text-white">Discount Codes</h2>
+              <button
+                onClick={openAddDiscount}
+                className="inline-flex items-center gap-1 bg-cyan-600 hover:bg-cyan-500 text-white px-4 py-2 rounded-md text-sm font-semibold"
+              >
+                + Add Discount
+              </button>
+            </div>
+
+            {/* Table */}
+            {isLoadingDiscounts ? (
+              <div className="flex justify-center p-8">
+                <Spinner className="w-8 h-8" />
+              </div>
+            ) : discounts.length === 0 ? (
+              <p className="text-center text-gray-400 py-8">No discount codes found.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-700">
+                  <thead>
+                    <tr className="text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                      <th className="px-4 py-3">Code</th>
+                      <th className="px-4 py-3">Discount %</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3">Claimed By</th>
+                      <th className="px-4 py-3">Claimed At</th>
+                      <th className="px-4 py-3">Created At</th>
+                      <th className="px-4 py-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-700">
+                    {discounts.map((d) => (
+                      <tr key={d.id}>
+
+                        {/* Code + Copy */}
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-cyan-400 text-sm font-bold tracking-widest">
+                              {d.discount_code}
+                            </span>
+                            <button
+                              onClick={() => handleCopyCode(d.id, d.discount_code)}
+                              title="Copy code"
+                              className="text-gray-400 hover:text-white transition-colors"
+                            >
+                              {copiedDiscountId === d.id ? (
+                                // Checkmark icon
+                                <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                </svg>
+                              ) : (
+                                // Copy icon
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" strokeLinecap="round" strokeLinejoin="round" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                                </svg>
+                              )}
+                            </button>
+                          </div>
+                        </td>
+
+                        {/* Percentage */}
+                        <td className="px-4 py-3 text-sm text-white font-semibold">
+                          {d.discount_percentage}%
+                        </td>
+
+                        {/* Status */}
+                        <td className="px-4 py-3">
+                          {d.is_claimed ? (
+                            <span className="px-2 py-1 rounded-full text-xs font-bold bg-red-900 text-red-300">
+                              Claimed
+                            </span>
+                          ) : d.is_active ? (
+                            <span className="px-2 py-1 rounded-full text-xs font-bold bg-green-900 text-green-300">
+                              Active
+                            </span>
+                          ) : (
+                            <span className="px-2 py-1 rounded-full text-xs font-bold bg-gray-700 text-gray-400">
+                              Inactive
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Claimed By */}
+                        <td className="px-4 py-3 text-xs text-gray-400 font-mono">
+                          {d.claimed_by ? (
+                            <span className="truncate max-w-[120px] block" title={d.claimed_by}>
+                              {d.claimed_by.slice(0, 8)}…
+                            </span>
+                          ) : (
+                            <span className="text-gray-600">—</span>
+                          )}
+                        </td>
+
+                        {/* Claimed At */}
+                        <td className="px-4 py-3 text-xs text-gray-400">
+                          {d.claimed_at
+                            ? new Date(d.claimed_at).toLocaleString()
+                            : <span className="text-gray-600">—</span>
+                          }
+                        </td>
+
+                        {/* Created At */}
+                        <td className="px-4 py-3 text-xs text-gray-400">
+                          {new Date(d.created_at).toLocaleDateString()}
+                        </td>
+
+                        {/* Actions */}
+                        {/* Actions */}
+                        <td className="px-4 py-3 text-right">
+                          <div className="flex justify-end gap-2">
+                            <button
+                              onClick={() => openEditDiscount(d)}
+                              className="inline-flex items-center gap-1 bg-cyan-600 hover:bg-cyan-500 text-white px-3 py-1.5 rounded-md text-xs font-semibold"
+                            >
+                              <Icon type="edit" className="w-4 h-4" />
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleDeleteDiscount(d.id)}
+                              className="inline-flex items-center gap-1 bg-red-700 hover:bg-red-600 text-white px-3 py-1.5 rounded-md text-xs font-semibold"
+                            >
+                              <Icon type="trash" className="w-4 h-4" />
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
         {activeTab === "deliveryPoints" && (
           <div className="animate-fade-in">
 
@@ -2806,6 +3144,12 @@ justify-center
                             >
                               <Icon type="plus-circle" className="w-4 h-4" />
                               View Tables
+                            </button>
+                            <button
+                              onClick={() => setTimingsModalOutlet(r)}
+                              className="inline-flex items-center gap-1 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-md text-xs font-semibold"
+                            >
+                              Timings
                             </button>
                             {""}
                           </td>
@@ -3606,6 +3950,90 @@ justify-center
           </div>
         </div>
       )}
+      {timingsModalOutlet && (
+        <OutletTimingsModal
+          outlet={timingsModalOutlet}
+          onClose={() => setTimingsModalOutlet(null)}
+        />
+      )}
+      {tagModalItem && (
+        <div
+          className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4"
+          onClick={() => setTagModalItem(null)}
+        >
+          <div
+            className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-md shadow-xl p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-gray-700 pb-3">
+              <h3 className="text-lg font-semibold text-cyan-400">
+                Tag "{tagModalItem.name}"
+              </h3>
+              <button
+                onClick={() => setTagModalItem(null)}
+                className="text-gray-400 hover:text-white text-xl leading-none"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">Cuisine Type</label>
+              <select
+                value={cuisineTag}
+                onChange={(e) => setCuisineTag(e.target.value)}
+                className="w-full bg-gray-800 text-gray-200 border border-gray-700 rounded-md p-2"
+              >
+                {CUISINE_TAG_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">Mood</label>
+              <select
+                value={moodTag}
+                onChange={(e) => setMoodTag(e.target.value)}
+                className="w-full bg-gray-800 text-gray-200 border border-gray-700 rounded-md p-2"
+              >
+                {MOOD_TAG_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {tagError && <p className="text-sm text-red-400">{tagError}</p>}
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                onClick={() => setTagModalItem(null)}
+                disabled={isSavingTags}
+                className="px-4 py-2 text-sm rounded-md border border-gray-600 text-gray-200 hover:bg-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveTags}
+                disabled={isSavingTags}
+                className="px-4 py-2 text-sm rounded-md bg-cyan-600 text-white hover:bg-cyan-500 disabled:opacity-60"
+              >
+                {isSavingTags ? "Saving..." : "Save Tags"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {timingsModalOutlet && (
+        <OutletTimingsModal
+          outlet={timingsModalOutlet}
+          onClose={() => setTimingsModalOutlet(null)}
+        />
+      )}
       {showDeliveryModal && selectedDelivery && (
         <div
           className="fixed inset-0 bg-black/75 z-50 flex items-center justify-center"
@@ -3653,6 +4081,169 @@ justify-center
                 No tracking available
               </div>
             )}
+          </div>
+        </div>
+      )}
+      {discountModal && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-md shadow-xl p-6 space-y-4">
+
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-gray-700 pb-3">
+              <h3 className="text-lg font-semibold text-cyan-400">
+                {discountModal.mode === "edit" ? "Edit Discount" : "Add Discount"}
+              </h3>
+              <button
+                onClick={() => setDiscountModal(null)}
+                className="text-gray-400 hover:text-white text-xl leading-none"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Discount Code */}
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">Discount Code</label>
+              <input
+                type="text"
+                value={discountCode}
+                onChange={(e) => setDiscountCode(e.target.value.toUpperCase())}
+                placeholder="e.g. SAVE20"
+                className="w-full bg-gray-800 text-gray-200 border border-gray-700 rounded-md p-3 font-mono tracking-widest uppercase"
+              />
+              <p className="text-xs text-gray-500 mt-1">Will be saved in UPPERCASE automatically.</p>
+            </div>
+
+            {/* Discount Percentage */}
+            <div>
+              <label className="block text-sm text-gray-300 mb-1">Discount Percentage (%)</label>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={discountPercentage}
+                onChange={(e) => setDiscountPercentage(e.target.value)}
+                placeholder="e.g. 15"
+                className="w-full bg-gray-800 text-gray-200 border border-gray-700 rounded-md p-3
+            [appearance:textfield]
+            [&::-webkit-outer-spin-button]:appearance-none
+            [&::-webkit-inner-spin-button]:appearance-none"
+              />
+            </div>
+
+            {/* Toggle active (edit only) */}
+            {/* {discountModal.mode === "edit" && (
+              <div className="flex items-center gap-3">
+                <label className="text-sm text-gray-300">Active</label>
+                <button
+                  onClick={() =>
+                    setDiscountModal((prev) =>
+                      prev ? { ...prev, data: { ...prev.data, is_active: !prev.data?.is_active } } : prev
+                    )
+                  }
+                  className={`px-3 py-1 rounded-full text-xs font-bold transition-colors ${discountModal.data?.is_active
+                      ? "bg-green-700 text-green-200"
+                      : "bg-gray-700 text-gray-400"
+                    }`}
+                >
+                  {discountModal.data?.is_active ? "Active" : "Inactive"}
+                </button>
+              </div>
+            )} */}
+
+            {/* Error */}
+            {discountError && (
+              <p className="text-sm text-red-400">{discountError}</p>
+            )}
+
+            {/* Buttons */}
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                onClick={() => setDiscountModal(null)}
+                disabled={isSavingDiscount}
+                className="px-4 py-2 text-sm rounded-md border border-gray-600 text-gray-200 hover:bg-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveDiscount}
+                disabled={isSavingDiscount}
+                className="px-4 py-2 text-sm rounded-md bg-cyan-600 text-white hover:bg-cyan-500 disabled:opacity-60"
+              >
+                {isSavingDiscount
+                  ? "Saving..."
+                  : discountModal.mode === "edit"
+                    ? "Update"
+                    : "Add Discount"}
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+         {deliveryFailureOrder && (
+        <div
+          className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4"
+          onClick={() => setDeliveryFailureOrder(null)}
+        >
+          <div
+            className="bg-gray-900 border border-yellow-600 rounded-xl w-full max-w-md shadow-2xl p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-gray-700 pb-3">
+              <div className="flex items-center gap-2">
+                <span className="text-yellow-400 text-xl">⚠️</span>
+                <h3 className="text-lg font-semibold text-yellow-400">uEngage Delivery Failed</h3>
+              </div>
+              <button
+                onClick={() => setDeliveryFailureOrder(null)}
+                className="text-gray-400 hover:text-white text-xl leading-none"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3 text-sm">
+              <div>
+                <p className="text-gray-400 text-xs mb-0.5">Order ID</p>
+                <p className="font-mono text-cyan-400">{deliveryFailureOrder.id}</p>
+              </div>
+
+              <div>
+                <p className="text-gray-400 text-xs mb-0.5">Vendor Order ID</p>
+                <p className="font-mono text-gray-200">
+                  {deliveryFailureOrder.delivery_message?.vendor_order_id || "—"}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-gray-400 text-xs mb-0.5">Task ID</p>
+                <p className="font-mono text-gray-200">
+                  {deliveryFailureOrder.delivery_message?.taskId || "—"}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-gray-400 text-xs mb-0.5">Status Code</p>
+                <span className="px-2 py-1 rounded-full text-xs font-bold bg-red-900 text-red-300">
+                  {deliveryFailureOrder.delivery_message?.status_code || "—"}
+                </span>
+              </div>
+
+              <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg p-3">
+                <p className="text-gray-400 text-xs mb-1">Failure Reason</p>
+                <p className="text-yellow-300 font-semibold">
+                  {deliveryFailureOrder.delivery_message?.message || "Unknown error"}
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setDeliveryFailureOrder(null)}
+              className="w-full mt-2 px-4 py-2 text-sm rounded-md border border-gray-600 text-gray-200 hover:bg-gray-800"
+            >
+              Close
+            </button>
           </div>
         </div>
       )}

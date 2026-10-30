@@ -18,6 +18,7 @@ import {
 import { ItemData } from "@/model/menu_list";
 import AddonModal, { EnrichedItemData } from "./AddonModal";
 import { IMAGE_BASE_URL, SUPABASE_URL } from "../src/config";
+import { MOOD_KEYWORDS } from "./FoodFinderModal";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -34,6 +35,24 @@ const buildCartKey = (item: any) => {
           .join("|")
       : "no-addons";
   return `${item.itemid}__${variationPart}__${addonPart}`;
+};
+
+// Common allergen → keyword map used to filter menu items by name/description.
+// Keys match the allergy option keys produced by FoodFinderModal.
+const ALLERGY_KEYWORDS: Record<string, string[]> = {
+  nuts: ["nut", "nuts", "cashew", "peanut", "almond", "pistachio", "walnut"],
+  dairy: ["dairy", "milk", "cheese", "butter", "cream", "paneer", "ghee", "yogurt", "curd"],
+  gluten: ["gluten", "wheat", "flour", "maida", "bread", "naan", "roti", "paratha"],
+  egg: ["egg", "eggs", "omelette", "omelet"],
+  shellfish: ["shellfish", "prawn", "shrimp", "crab", "lobster", "oyster"],
+};
+
+const ALLERGY_LABELS: Record<string, string> = {
+  nuts: "Nuts",
+  dairy: "Dairy",
+  gluten: "Gluten",
+  egg: "Egg",
+  shellfish: "Shellfish",
 };
 
 // ─── Shimmer / Spinner ───────────────────────────────────────────────────────
@@ -403,6 +422,31 @@ const BrandPage: React.FC<BrandPageProps> = ({ onBack }) => {
   const [isMenuChanging,       setIsMenuChanging]       = useState(false);
   const [isInitialMenuLoading, setIsInitialMenuLoading] = useState(true);
 
+  // ── Food Finder preferences carried over from the landing page quiz ──────
+  const [activeAllergies, setActiveAllergies] = useState<string[]>([]);
+  const [activeMood,      setActiveMood]      = useState<string>("");
+
+  useEffect(() => {
+    try {
+      const storedAllergies = localStorage.getItem("foodFinderAllergies");
+      setActiveAllergies(storedAllergies ? JSON.parse(storedAllergies) : []);
+      setActiveMood(localStorage.getItem("foodFinderMood") || "");
+    } catch {
+      setActiveAllergies([]);
+      setActiveMood("");
+    }
+  }, []);
+
+  const clearAllergyFilter = () => {
+    setActiveAllergies([]);
+    try { localStorage.setItem("foodFinderAllergies", JSON.stringify([])); } catch {}
+  };
+
+  const clearMoodFilter = () => {
+    setActiveMood("");
+    try { localStorage.setItem("foodFinderMood", ""); } catch {}
+  };
+
   /* ── Tick every second for countdown display ── */
   const [currentTime, setCurrentTime] = useState(Date.now());
 
@@ -590,7 +634,8 @@ const BrandPage: React.FC<BrandPageProps> = ({ onBack }) => {
     }
   };
 
-  const filteredMenu = useMemo(() => {
+  // ── Search filter (existing) ──
+  const searchFilteredMenu = useMemo(() => {
     if (!searchQuery.trim()) return menuData;
     const q = searchQuery.toLowerCase();
     return menuData
@@ -604,6 +649,47 @@ const BrandPage: React.FC<BrandPageProps> = ({ onBack }) => {
       }))
       .filter((cat: any) => cat.items.length > 0);
   }, [searchQuery, menuData]);
+
+  // ── Allergy filter: drop items whose name/description match any active allergen keyword ──
+  const itemMatchesAllergy = (item: any, allergyKey: string) => {
+    const keywords = ALLERGY_KEYWORDS[allergyKey] || [];
+    const haystack = `${item.itemname || ""} ${item.itemdescription || ""}`.toLowerCase();
+    return keywords.some((kw) => haystack.includes(kw));
+  };
+
+  const allergyFilteredMenu = useMemo(() => {
+    if (activeAllergies.length === 0) return searchFilteredMenu;
+    return searchFilteredMenu
+      .map((cat: any) => ({
+        ...cat,
+        items: cat.items.filter(
+          (item: any) => !activeAllergies.some((a) => itemMatchesAllergy(item, a))
+        ),
+      }))
+      .filter((cat: any) => cat.items.length > 0);
+  }, [searchFilteredMenu, activeAllergies]);
+
+  // ── Mood soft-sort: move keyword-matching items to the front of each category, flagged for highlight ──
+  const itemMatchesMood = (item: any, mood: string) => {
+    const keywords = MOOD_KEYWORDS[mood] || [];
+    if (keywords.length === 0) return false;
+    const haystack = `${item.itemname || ""} ${item.itemdescription || ""}`.toLowerCase();
+    return keywords.some((kw) => haystack.includes(kw));
+  };
+
+  const filteredMenu = useMemo(() => {
+    if (!activeMood) return allergyFilteredMenu;
+    return allergyFilteredMenu.map((cat: any) => {
+      const flagged = cat.items.map((item: any) => ({
+        ...item,
+        _moodMatch: itemMatchesMood(item, activeMood),
+      }));
+      const sorted = [...flagged].sort(
+        (a: any, b: any) => Number(b._moodMatch) - Number(a._moodMatch)
+      );
+      return { ...cat, items: sorted };
+    });
+  }, [allergyFilteredMenu, activeMood]);
 
   const handleAddToCart = (item: any) => {
     const cartKey   = buildCartKey(item);
@@ -903,7 +989,7 @@ const BrandPage: React.FC<BrandPageProps> = ({ onBack }) => {
           <div className="container mx-auto px-4">
             <h3 className="text-4xl font-serif text-white text-center mb-12">Our Menu</h3>
 
-            <div className="max-w-lg mx-auto mb-10 relative">
+            <div className="max-w-lg mx-auto mb-6 relative">
               <Icon type="search" className="absolute left-3 top-3 w-5 h-5 text-gray-400" />
               <input
                 type="text"
@@ -913,6 +999,28 @@ const BrandPage: React.FC<BrandPageProps> = ({ onBack }) => {
                 className="w-full bg-gray-700 text-white pl-10 p-3 rounded-full border border-gray-600 focus:ring-2 focus:ring-[var(--primary-color)] outline-none"
               />
             </div>
+
+            {/* Active Food Finder filter pills */}
+            {(activeAllergies.length > 0 || activeMood) && (
+              <div className="max-w-lg mx-auto mb-10 flex flex-wrap items-center justify-center gap-2">
+                {activeAllergies.length > 0 && (
+                  <span className="flex items-center gap-2 bg-red-900/30 border border-red-700/50 text-red-200 text-xs px-3 py-1.5 rounded-full">
+                    Filtered out: {activeAllergies.map((a) => ALLERGY_LABELS[a] || a).join(", ")}
+                    <button onClick={clearAllergyFilter} className="hover:text-white" aria-label="Clear allergy filter">
+                      <Icon type="x" className="w-3.5 h-3.5" />
+                    </button>
+                  </span>
+                )}
+                {/* {activeMood && (
+                  <span className="flex items-center gap-2 bg-cyan-900/30 border border-cyan-700/50 text-cyan-200 text-xs px-3 py-1.5 rounded-full">
+                    {activeMood} picks highlighted
+                    <button onClick={clearMoodFilter} className="hover:text-white" aria-label="Clear mood filter">
+                      <Icon type="x" className="w-3.5 h-3.5" />
+                    </button>
+                  </span>
+                )} */}
+              </div>
+            )}
 
             {categories.length === 0 ? (
               <CategoryShimmer />
@@ -939,9 +1047,18 @@ const BrandPage: React.FC<BrandPageProps> = ({ onBack }) => {
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
                 <ShimmerCard /><ShimmerCard /><ShimmerCard />
               </div>
+            ) : filteredMenu.length === 0 ? (
+              <div className="text-center text-gray-400 py-10">
+                No dishes match your current filters.
+                {activeAllergies.length > 0 && (
+                  <button onClick={clearAllergyFilter} className="block mx-auto mt-2 text-cyan-400 hover:underline">
+                    Clear allergy filter
+                  </button>
+                )}
+              </div>
             ) : (
               <div className="space-y-12">
-                {(searchQuery.trim() ? filteredMenu : menuData).map((category: any) => (
+                {filteredMenu.map((category: any) => (
                   <div key={category.category_id}>
                     <h4 className="text-2xl text-white font-serif mb-6">{category.category}</h4>
                     <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
@@ -973,8 +1090,19 @@ const BrandPage: React.FC<BrandPageProps> = ({ onBack }) => {
                         return (
                           <div
                             key={item.itemid}
-                            className="bg-gray-900 rounded-lg shadow-lg overflow-hidden flex flex-col"
+                            className={[
+                              "bg-gray-900 rounded-lg shadow-lg overflow-hidden flex flex-col relative",
+                              item._moodMatch ? "ring-2 ring-[var(--accent-color)]" : "",
+                            ].join(" ")}
                           >
+                            {item._moodMatch && (
+                              <span
+                                className="absolute top-2 left-2 z-10 text-xs font-bold px-2 py-1 rounded-full shadow"
+                                style={{ backgroundColor: "var(--accent-color)", color: "#111" }}
+                              >
+                                {activeMood} pick
+                              </span>
+                            )}
                             <div className="relative">
                               <img
                                 src={item.item_image_url}

@@ -5,7 +5,6 @@ import { Icon } from "./Icon";
 import { DeliveryAddress } from "../types";
 import { BASE_URL, VITE_RAZORPAY_KEY_ID } from "../src/config";
 import {
-  applyFlatDiscount,
   apiGetUserValidPoints,
   apiPunchOrder,
   apiBookDelivery,
@@ -17,23 +16,29 @@ import {
 } from "../services/apiService";
 import { useOutlet } from "../context/OutletContext";
 
-const Spinner: React.FC<{ className?: string }> = ({
-  className = "h-5 w-5",
-}) => (
-  <svg
-    className={`animate-spin ${className}`}
-    xmlns="http://www.w3.org/2000/svg"
-    fill="none"
-    viewBox="0 0 24 24"
-  >
-    <circle
-      className="opacity-25"
-      cx="12"
-      cy="12"
-      r="10"
-      stroke="currentColor"
-      strokeWidth="4"
-    ></circle>
+// ─── Coupon API helpers (inline — add these to apiService.ts if not present) ──
+const apiApplyDiscount = async (discount_code: string) => {
+  const res = await fetch(`${BASE_URL}/discount/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ discount_code }),
+  });
+  return res.json();
+};
+
+const apiClaimDiscount = async (discount_code: string, user_id: string) => {
+  const res = await fetch(`${BASE_URL}/discount/claim`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ discount_code, user_id }),
+  });
+  return res.json();
+};
+// ────────────────────────────────────────────────────────────────────────────
+
+const Spinner: React.FC<{ className?: string }> = ({ className = "h-5 w-5" }) => (
+  <svg className={`animate-spin ${className}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
     <path
       className="opacity-75"
       fill="currentColor"
@@ -48,21 +53,17 @@ type TaxLine = {
   tax_percentage: string;
   amount?: string | number;
 };
+
 const extractCity = (address: DeliveryAddress): string => {
   if (address.city) return address.city;
-  // Parse from the formatted address string as fallback
   const parts = address.fullAddress.split(",").map((p) => p.trim());
-  // City is typically the part before the state/pincode segment
-  const cityPart = parts.find(
-    (p) => p.length > 2 && !/^\d{6}$/.test(p) && !/^\d/.test(p)
-  );
+  const cityPart = parts.find((p) => p.length > 2 && !/^\d{6}$/.test(p) && !/^\d/.test(p));
   return cityPart ?? "Bangalore";
 };
-// ✅ Load Razorpay script dynamically — prevents "not a constructor" error
-//    when the API response comes back faster than the script tag loads
+
 const loadRazorpayScript = (): Promise<boolean> => {
   return new Promise((resolve) => {
-    if ((window as any).Razorpay) return resolve(true); // already loaded
+    if ((window as any).Razorpay) return resolve(true);
     const script = document.createElement("script");
     script.src = "https://checkout.razorpay.com/v1/checkout.js";
     script.onload = () => resolve(true);
@@ -77,7 +78,7 @@ const getItemKey = (i: any) => String(i.itemid);
 const computeDiscountAwareTaxes = (
   items: any[],
   calculatedTaxByItemId: Record<string, TaxLine[]>,
-  orderDiscount: number,
+  orderDiscount: number
 ) => {
   const lines = items.map((i) => {
     const key = getItemKey(i);
@@ -98,11 +99,7 @@ const computeDiscountAwareTaxes = (
       i.is_tax_inclusive === "1" ||
       i.is_tax_inclusive === 1;
 
-    const unitBase =
-      isInclusive && totalRate > 0
-        ? unitPrice / (1 + totalRate / 100)
-        : unitPrice;
-
+    const unitBase = isInclusive && totalRate > 0 ? unitPrice / (1 + totalRate / 100) : unitPrice;
     const lineBase = unitBase * qty;
 
     return { key, lineBase, taxArr };
@@ -151,16 +148,13 @@ const buildTaxSummary = (items: any[], perItemTax: Record<string, any[]>) => {
   for (const item of items) {
     const key = getItemKey(item);
     const taxes = perItemTax[key] || [];
-
     const liability = String(item.gst_liability || "vendor").toLowerCase();
 
     for (const t of taxes) {
       const id = String(t.id);
       const title = String(t.name);
       const pct = String(t.tax_percentage);
-
       const groupKey = `${id}|${title}|${pct}|${liability}`;
-
       const amt = Number(t.amount || 0);
 
       if (!map.has(groupKey)) {
@@ -176,10 +170,7 @@ const buildTaxSummary = (items: any[], perItemTax: Record<string, any[]>) => {
 
       const row = map.get(groupKey);
       row.tax += amt;
-
-      if (liability === "restaurant") {
-        row.restaurant_liable_amt += amt;
-      }
+      if (liability === "restaurant") row.restaurant_liable_amt += amt;
     }
   }
 
@@ -196,35 +187,38 @@ interface CartModalProps {
   brandId: string;
   resturentName: string;
 }
+
 type View = "cart" | "auth" | "address" | "checkout" | "confirmation";
 
-const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaurantName, }) => {
+const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaurantName }) => {
   console.log("Restaurant Name:", restaurantName);
   const { outletLocation } = useOutlet();
   const RESTAURANT_LAT = outletLocation?.lat ?? 0;
   const RESTAURANT_LNG = outletLocation?.lng ?? 0;
-  const [calculatedTaxByItemId, setCalculatedTaxByItemId] = useState<
-    Record<string, any[]>
-  >({});
-  const [deliveryCharge, setDeliveryCharge] = useState(0);
 
-  const [deliveryDistance, setDeliveryDistance] =
-    useState(0);
+  const [calculatedTaxByItemId, setCalculatedTaxByItemId] = useState<Record<string, any[]>>({});
+  const [deliveryCharge, setDeliveryCharge] = useState(0);
+  const [deliveryDistance, setDeliveryDistance] = useState(0);
   const [gstAfterDiscount, setGstAfterDiscount] = useState(0);
-  const {
-    items,
-    removeItem,
-    updateItemQuantity,
-    totalPrice,
-    clearCart,
-    itemCount,
-  } = useCart();
-  const { isAuthenticated, currentUser, login, register, refreshCurrentUser } =
-    useAuth();
+
+  const { items, removeItem, updateItemQuantity, totalPrice, clearCart, itemCount } = useCart();
+  const { isAuthenticated, currentUser, login, register, refreshCurrentUser } = useAuth();
+
   const [view, setView] = useState<View>("cart");
   const [lastOrderId, setLastOrderId] = useState<string | null>(null);
   const [loyaltyPointsToRedeem, setLoyaltyPointsToRedeem] = useState(0);
   const [availablePoints, setAvailablePoints] = useState(0);
+
+  // ── Coupon state ────────────────────────────────────────────────────────────
+  const [couponCode, setCouponCode] = useState("");
+  const [appliedCoupon, setAppliedCoupon] = useState<{
+    id: string;
+    discount_code: string;
+    discount_percentage: number;
+  } | null>(null);
+  const [couponError, setCouponError] = useState("");
+  const [isApplyingCoupon, setIsApplyingCoupon] = useState(false);
+  // ────────────────────────────────────────────────────────────────────────────
 
   const [isLoginView, setIsLoginView] = useState(true);
   const [authError, setAuthError] = useState("");
@@ -254,11 +248,39 @@ const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaur
   const [isProcessing, setIsProcessing] = useState(false);
   const effectiveDeliveryCharge = view === "checkout" ? deliveryCharge : 0;
 
+  // ── Coupon handlers ─────────────────────────────────────────────────────────
+  const handleApplyCoupon = async () => {
+    if (!couponCode.trim()) {
+      setCouponError("Please enter a coupon code.");
+      return;
+    }
+    setIsApplyingCoupon(true);
+    setCouponError("");
+    try {
+      const res = await apiApplyDiscount(couponCode.trim());
+      if (res?.error || (res?.status && res.status >= 400)) {
+        setCouponError(res.message || "Invalid or expired coupon code.");
+        setAppliedCoupon(null);
+        return;
+      }
+      setAppliedCoupon(res.data);
+      setCouponError("");
+    } catch {
+      setCouponError("Failed to apply coupon. Try again.");
+    } finally {
+      setIsApplyingCoupon(false);
+    }
+  };
+
+  const handleRemoveCoupon = () => {
+    setAppliedCoupon(null);
+    setCouponCode("");
+    setCouponError("");
+  };
+  // ────────────────────────────────────────────────────────────────────────────
+
   const checkIsBangalore = (address: string) => {
-    return (
-      address.toLowerCase().includes("bangalore") ||
-      address.toLowerCase().includes("bengaluru")
-    );
+    return address.toLowerCase().includes("bangalore") || address.toLowerCase().includes("bengaluru");
   };
 
   const formatOrderDate = () => {
@@ -297,15 +319,13 @@ const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaur
             amount: t.amount,
           }));
         }
-      } catch { }
+      } catch {}
     }
 
     return [];
   };
 
   const getItemGST = (item: any) => {
-    console.log("RAW item_tax:", item.item_tax);
-    console.log("NORMALIZED:", normalizeItemTax(item));
     const taxArr = normalizeItemTax(item);
     const rate = taxArr.reduce((s, t) => s + Number(t.tax_percentage || 0), 0);
 
@@ -334,59 +354,41 @@ const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaur
   const getCurrentDateTime = () => {
     const d = new Date();
     const pad = (n: number) => String(n).padStart(2, "0");
-    return (
-      d.getFullYear() +
-      "-" +
-      pad(d.getMonth() + 1) +
-      "-" +
-      pad(d.getDate()) +
-      " " +
-      pad(d.getHours()) +
-      ":" +
-      pad(d.getMinutes()) +
-      ":" +
-      pad(d.getSeconds())
-    );
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(
+      d.getMinutes()
+    )}:${pad(d.getSeconds())}`;
   };
 
   useEffect(() => {
     const taxMap: Record<string, TaxLine[]> = {};
     items.forEach((it: any) => {
       const key = String(it.itemid);
-      const taxArr = normalizeItemTax(it);
-      taxMap[key] = taxArr;
+      taxMap[key] = normalizeItemTax(it);
     });
     setCalculatedTaxByItemId(taxMap);
   }, [items]);
 
   const hasInclusiveItems = useMemo(() => {
-    return items.some((i: any) => {
-      return (
+    return items.some(
+      (i: any) =>
         i.tax_inclusive === true ||
         i.tax_inclusive === "true" ||
         i.is_tax_inclusive === "1" ||
         i.is_tax_inclusive === 1
-      );
-    });
+    );
   }, [items]);
 
-  // Google Maps Autocomplete Init
   useEffect(() => {
     if (
       view === "address" &&
       showAddressForm &&
       addressInputRef.current &&
-      (window as any).google &&
-      (window as any).google.maps &&
-      (window as any).google.maps.places
+      (window as any).google?.maps?.places
     ) {
-      const autocomplete = new (window as any).google.maps.places.Autocomplete(
-        addressInputRef.current,
-        {
-          componentRestrictions: { country: "in" },
-          fields: ["formatted_address", "geometry", "address_components"],
-        }
-      );
+      const autocomplete = new (window as any).google.maps.places.Autocomplete(addressInputRef.current, {
+        componentRestrictions: { country: "in" },
+        fields: ["formatted_address", "geometry", "address_components"],
+      });
 
       autocomplete.addListener("place_changed", async () => {
         const place = autocomplete.getPlace();
@@ -398,15 +400,13 @@ const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaur
 
         if (!checkIsBangalore(formatted)) {
           setIsAddressServiceable(false);
-          setAddressError(
-            "Currently, our culinary delights travel exclusively within Bangalore."
-          );
+          setAddressError("Currently, our culinary delights travel exclusively within Bangalore.");
           return;
         }
-        const cityComponent = place.address_components?.find((c: any) =>
-          c.types.includes("locality")
-        );
+
+        const cityComponent = place.address_components?.find((c: any) => c.types.includes("locality"));
         const city = cityComponent?.long_name ?? "";
+
         setNewAddressData((prev) => ({
           ...prev,
           fullAddress: formatted,
@@ -415,38 +415,21 @@ const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaur
         }));
 
         try {
-          const resp = await apiCheckServiceAvailability(
-            RESTAURANT_LAT,
-            RESTAURANT_LNG,
-            dropLat,
-            dropLng
-          );
-          console.log("=== SERVICE API RESPONSE (FORM) ===");
-          console.log(JSON.stringify(resp, null, 2));
+          const resp = await apiCheckServiceAvailability(RESTAURANT_LAT, RESTAURANT_LNG, dropLat, dropLng);
           const serviceable = resp?.data?.serviceable || resp?.serviceable || {};
-
-          const locationOk =
-            serviceable.locationServiceAble ??
-            serviceable.locationServiceable ??
-            false;
-
-          const riderOk =
-            serviceable.riderServiceAble ??
-            serviceable.riderServiceable ??
-            false;
+          const locationOk = serviceable.locationServiceAble ?? serviceable.locationServiceable ?? false;
+          const riderOk = serviceable.riderServiceAble ?? serviceable.riderServiceable ?? false;
 
           if (!locationOk && !riderOk) {
             setIsAddressServiceable(false);
             setAddressError("Delivery is not available in this location.");
             return;
           }
-
           if (!locationOk) {
             setIsAddressServiceable(false);
             setAddressError("Location is not deliverable.");
             return;
           }
-
           if (!riderOk) {
             setIsAddressServiceable(false);
             setAddressError("Rider not available in this location.");
@@ -455,48 +438,17 @@ const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaur
 
           setIsAddressServiceable(true);
           setAddressError("");
-          const chargeResp =
-            await apiGetDeliveryCharge({
 
-              restaurantLat:
-                RESTAURANT_LAT,
+          const chargeResp = await apiGetDeliveryCharge({
+            restaurantLat: RESTAURANT_LAT,
+            restaurantLng: RESTAURANT_LNG,
+            deliveryLat: dropLat,
+            deliveryLng: dropLng,
+          });
 
-              restaurantLng:
-                RESTAURANT_LNG,
-
-              deliveryLat:
-                dropLat,
-
-              deliveryLng:
-                dropLng
-
-            });
-
-          // setDeliveryCharge(
-          //   Number(
-          //     chargeResp?.data
-          //       ?.delivery_charge || 0
-          //   )
-          // );
-
-          setDeliveryCharge(
-
-            Number(
-              chargeResp?.data
-                ?.delivery_charge || 0
-            )
-
-          );
-
-          setDeliveryDistance(
-
-            Number(
-              chargeResp?.data
-                ?.distance_km || 0
-            )
-
-          );
-        } catch (err) {
+          setDeliveryCharge(Number(chargeResp?.data?.delivery_charge || 0));
+          setDeliveryDistance(Number(chargeResp?.data?.distance_km || 0));
+        } catch {
           setIsAddressServiceable(false);
           setAddressError("Delivery service unavailable.");
         }
@@ -516,13 +468,11 @@ const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaur
     if (view === "address" && currentUser) {
       if (currentUser.addresses && currentUser.addresses.length > 0) {
         setShowAddressForm(false);
-        const defaultAddr =
-          currentUser.addresses.find((a) => a.isDefault) ||
-          currentUser.addresses[0];
+        const defaultAddr = currentUser.addresses.find((a) => a.isDefault) || currentUser.addresses[0];
         setSelectedAddressId(defaultAddr.id || null);
       } else {
         setShowAddressForm(true);
-        setNewAddressData({ fullAddress: "", flatNo: "", landmark: "" });
+        setNewAddressData({ fullAddress: "", flatNo: "", landmark: "" } as DeliveryAddress);
         setSaveNewAddressAsDefault(true);
       }
       setIsAddressServiceable(true);
@@ -530,27 +480,19 @@ const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaur
     }
   }, [view, currentUser]);
 
-  const {
-    subtotal,
-    discountAmount,
-    loyaltyDiscount,
-    preTaxTotal,
-    gstAmount,
-    grandTotal,
-  } = useMemo(() => {
+  // ── Pricing useMemo — coupon-based discount ─────────────────────────────────
+  const { subtotal, discountAmount, loyaltyDiscount, preTaxTotal, gstAmount, grandTotal } = useMemo(() => {
     const subtotalCalc = totalPrice;
-    const { discountedTotal, discountAmount: flatDiscount } =
-      applyFlatDiscount(subtotalCalc);
-    const loyaltyDiscountCalc = Math.min(
-      loyaltyPointsToRedeem,
-      availablePoints,
-      Math.floor(discountedTotal),
-    );
 
-    const preTaxTotalCalc =
-      discountedTotal - loyaltyDiscountCalc > 0
-        ? discountedTotal - loyaltyDiscountCalc
-        : 0;
+    const couponDiscount = appliedCoupon
+      ? round2((subtotalCalc * appliedCoupon.discount_percentage) / 100)
+      : 0;
+
+    const afterCoupon = Math.max(0, subtotalCalc - couponDiscount);
+
+    const loyaltyDiscountCalc = Math.min(loyaltyPointsToRedeem, availablePoints, Math.floor(afterCoupon));
+
+    const preTaxTotalCalc = Math.max(0, afterCoupon - loyaltyDiscountCalc);
     const gstAmountCalc = gstAfterDiscount;
     const grandTotalCalc = hasInclusiveItems
       ? preTaxTotalCalc + effectiveDeliveryCharge
@@ -558,7 +500,7 @@ const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaur
 
     return {
       subtotal: subtotalCalc,
-      discountAmount: flatDiscount,
+      discountAmount: couponDiscount,
       loyaltyDiscount: loyaltyDiscountCalc,
       preTaxTotal: preTaxTotalCalc,
       gstAmount: gstAmountCalc,
@@ -567,6 +509,7 @@ const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaur
   }, [
     items,
     totalPrice,
+    appliedCoupon,
     loyaltyPointsToRedeem,
     availablePoints,
     deliveryCharge,
@@ -574,17 +517,11 @@ const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaur
     hasInclusiveItems,
     view,
   ]);
+  // ────────────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    const discountForTax =
-      Number(discountAmount || 0) + Number(loyaltyDiscount || 0);
-
-    const { gstTotal } = computeDiscountAwareTaxes(
-      items,
-      calculatedTaxByItemId,
-      discountForTax,
-    );
-
+    const discountForTax = Number(discountAmount || 0) + Number(loyaltyDiscount || 0);
+    const { gstTotal } = computeDiscountAwareTaxes(items, calculatedTaxByItemId, discountForTax);
     setGstAfterDiscount(gstTotal);
   }, [items, calculatedTaxByItemId, discountAmount, loyaltyDiscount]);
 
@@ -594,9 +531,12 @@ const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaur
         setView("cart");
         setAuthError("");
         setLoyaltyPointsToRedeem(0);
-        setNewAddressData({ fullAddress: "", flatNo: "", landmark: "" });
+        setNewAddressData({ fullAddress: "", flatNo: "", landmark: "" } as DeliveryAddress);
         setIsAddressServiceable(true);
         setAddressError("");
+        setCouponCode("");
+        setAppliedCoupon(null);
+        setCouponError("");
       }, 300);
     }
   }, [isOpen]);
@@ -615,20 +555,13 @@ const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaur
         await login(authFormData.email, authFormData.password);
         setView("address");
       } else {
-        await register(
-          authFormData.name,
-          authFormData.email,
-          authFormData.phone,
-          authFormData.password,
-        );
+        await register(authFormData.name, authFormData.email, authFormData.phone, authFormData.password);
         setIsLoginView(true);
         setAuthError("Check your email to confirm your account.");
         setView("auth");
       }
     } catch (err) {
-      setAuthError(
-        err instanceof Error ? err.message : "An unknown error occurred.",
-      );
+      setAuthError(err instanceof Error ? err.message : "An unknown error occurred.");
     } finally {
       setIsProcessing(false);
     }
@@ -654,71 +587,31 @@ const CartModal: React.FC<CartModalProps> = ({ isOpen, onClose, brandId, restaur
     }
 
     const deliveryAddress = getFinalDeliveryAddress();
-    const latestChargeResp =
-      await apiGetDeliveryCharge({
 
-        restaurantLat:
-          RESTAURANT_LAT,
+    const latestChargeResp = await apiGetDeliveryCharge({
+      restaurantLat: RESTAURANT_LAT,
+      restaurantLng: RESTAURANT_LNG,
+      deliveryLat: deliveryAddress?.coordinates?.lat ?? 0,
+      deliveryLng: deliveryAddress?.coordinates?.lng ?? 0,
+    });
 
-        restaurantLng:
-          RESTAURANT_LNG,
+    const latestCharge = Number(latestChargeResp?.data?.delivery_charge || 0);
+    const latestDistance = Number(latestChargeResp?.data?.distance_km || 0);
 
-        deliveryLat:
-          deliveryAddress?.coordinates?.lat ?? 0,
+    if (latestCharge !== deliveryCharge) {
+      setDeliveryCharge(latestCharge);
+      setDeliveryDistance(latestDistance);
 
-        deliveryLng:
-          deliveryAddress?.coordinates?.lng ?? 0
-
-      });
-
-
-    const latestCharge =
-      Number(
-        latestChargeResp?.data
-          ?.delivery_charge || 0
-      );
-
-    const latestDistance =
-      Number(
-        latestChargeResp?.data
-          ?.distance_km || 0
-      );
-
-
-    // compare with existing
-    if (
-      latestCharge !==
-      deliveryCharge
-    ) {
-
-      setDeliveryCharge(
-        latestCharge
-      );
-
-      setDeliveryDistance(
-        latestDistance
-      );
-
-
-      // snackbar
       alert(
-        `Delivery charges revised from ${deliveryCharge <= 0
-          ? "Free"
-          : `₹${deliveryCharge}`
-        }
-to
-${latestCharge <= 0
-          ? "Free"
-          : `₹${latestCharge}`
+        `Delivery charges revised from ${deliveryCharge <= 0 ? "Free" : `₹${deliveryCharge}`} to ${
+          latestCharge <= 0 ? "Free" : `₹${latestCharge}`
         }`
       );
 
-
-      // stay on checkout
       setIsProcessing(false);
-
       return;
     }
+
     if (!deliveryAddress) {
       alert("Please select a delivery address.");
       setView("address");
@@ -728,30 +621,16 @@ ${latestCharge <= 0
     setIsProcessing(true);
 
     try {
-      const discountForTax =
-        Number(discountAmount || 0) + Number(loyaltyDiscount || 0);
+      const discountForTax = Number(discountAmount || 0) + Number(loyaltyDiscount || 0);
+      const { perItemTax, gstTotal } = computeDiscountAwareTaxes(items, calculatedTaxByItemId, discountForTax);
 
-      const { perItemTax, gstTotal } = computeDiscountAwareTaxes(
-        items,
-        calculatedTaxByItemId,
-        discountForTax,
-      );
-      console.log("Order.tax_total", gstAfterDiscount);
-      console.log("Sum item_tax", items.reduce((s, i) => s + getItemGST(i), 0));
-
-      const preTax = Math.max(
-        0,
-        Number(totalPrice || 0) -
-        Number(discountAmount || 0) -
-        Number(loyaltyDiscount || 0),
-      );
+      const preTax = Math.max(0, Number(totalPrice || 0) - Number(discountAmount || 0) - Number(loyaltyDiscount || 0));
 
       const finalTotalForPayload = hasInclusiveItems
         ? preTax + Number(deliveryCharge || 0)
         : preTax + Number(gstTotal || 0) + Number(deliveryCharge || 0);
 
       const taxSummary = buildTaxSummary(items, perItemTax);
-      console.log("Tax.details sum", taxSummary.reduce((s, t) => s + Number(t.tax), 0));
 
       const payload = {
         userId: currentUser.id,
@@ -762,7 +641,6 @@ ${latestCharge <= 0
                 restID: brandId,
               },
             },
-
             Customer: {
               details: {
                 email: currentUser.email,
@@ -775,53 +653,37 @@ ${latestCharge <= 0
                 city: extractCity(deliveryAddress),
               },
             },
-
             Order: {
               details: {
                 preorder_date: formatOrderDate(),
                 preorder_time: formatOrderTime(),
-
                 service_charge: "0",
                 sc_tax_amount: "0",
-
                 delivery_charges: String(deliveryCharge ?? 0),
                 dc_tax_percentage: "0",
                 dc_tax_amount: "0",
                 dc_gst_details: [],
-
                 packing_charges: "0",
                 pc_tax_amount: "0",
                 pc_tax_percentage: "0",
                 pc_gst_details: [],
-
                 order_type: "H",
                 advanced_order: "N",
                 urgent_order: false,
                 urgent_time: 0,
-
                 payment_type: "ONLINE",
                 table_no: "",
                 no_of_persons: "0",
-
-                discount_total: (
-                  Number(discountAmount || 0) + Number(loyaltyDiscount || 0)
-                ).toFixed(2),
-                discount_type:
-                  Number(discountAmount || 0) + Number(loyaltyDiscount || 0) > 0
-                    ? "F"
-                    : "",
-
+                discount_total: (Number(discountAmount || 0) + Number(loyaltyDiscount || 0)).toFixed(2),
+               discount_type: "F",
                 tax_total: Number(gstAfterDiscount || 0).toFixed(2),
                 total: Number(finalTotalForPayload || 0).toFixed(2),
-
                 created_on: getCurrentDateTime(),
                 enable_delivery: 0,
-                // callback_url: `https://cherish-rollable-anahi.ngrok-free.dev/api/petpuja/callback`,
                 callback_url: `${BASE_URL}/petpuja/callback`,
                 collect_cash: "0",
               },
             },
-
             OrderItem: {
               details: items.map((i: any) => {
                 const itemKey = String(i.itemid);
@@ -829,37 +691,26 @@ ${latestCharge <= 0
                 return {
                   id: String(i.itemid ?? i.id ?? ""),
                   name: String(i.itemname ?? i.name ?? ""),
-
-                  tax_inclusive: i.tax_inclusive,
+                  tax_inclusive:
+                    i.tax_inclusive === true ||
+                    i.tax_inclusive === "true" ||
+                    i.is_tax_inclusive === "1" ||
+                    i.is_tax_inclusive === 1,
                   gst_liability: String(i.gst_liability ?? "vendor"),
-
                   item_tax: (perItemTax[itemKey] || []).map((t: any) => ({
                     id: String(t.id),
                     name: String(t.name),
                     tax_percentage: String(t.tax_percentage),
                     amount: Number(t.amount || 0).toFixed(2),
                   })),
-
                   item_discount: "0",
                   price: String(i.base_price ?? i.price ?? "0"),
-                  final_price: (
-                    Number(i.unit_price || 0) * Number(i.quantity || 1)
-                  ).toFixed(2),
-
+                  final_price: (Number(i.unit_price || 0) * Number(i.quantity || 1)).toFixed(2),
                   quantity: String(i.quantity ?? "1"),
-
-                  variation_id: String(
-                    i.selectedVariation?.id || ""
-                  ),
-
-                  variation_name: String(
-                    i.selectedVariation?.name || ""
-                  ),
-
+                  variation_id: String(i.selectedVariation?.id || ""),
+                  variation_name: String(i.selectedVariation?.name || ""),
                   AddonItem: {
-                    details: Object.values(
-                      i.selectedAddons || {}
-                    )
+                    details: Object.values(i.selectedAddons || {})
                       .flat()
                       .map((a: any) => ({
                         id: String(a.id),
@@ -874,17 +725,14 @@ ${latestCharge <= 0
               }),
             },
           },
-
           Tax: {
             details: taxSummary,
           },
-
           udid: "",
           device_type: "Web",
         },
       };
 
-      // 2) Hit backend → create Razorpay order (PetPooja now called after payment)
       const res = await fetch(`${BASE_URL}/payment/create-order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -898,16 +746,14 @@ ${latestCharge <= 0
       const clientorderID = data.clientorderID;
       const pricing = {
         subtotal,
-        flat_discount: discountAmount,
+        coupon_code: appliedCoupon?.discount_code ?? null,
+        coupon_discount: discountAmount,
         loyalty_discount: loyaltyDiscount,
         gst_amount: gstAfterDiscount,
         delivery_charge: deliveryCharge,
         total_amount: grandTotal,
       };
 
-      // 3) ✅ Wait for Razorpay script to be ready before opening checkout
-      //    Previously PetPooja call in createOrder gave enough time for the
-      //    script to load. Now that it's removed, we must wait explicitly.
       const loaded = await loadRazorpayScript();
       if (!loaded) {
         alert("Failed to load payment gateway. Please try again.");
@@ -915,7 +761,6 @@ ${latestCharge <= 0
         return;
       }
 
-      // 4) Open Razorpay Checkout
       const rzp = new (window as any).Razorpay({
         key: data.key,
         order_id: razorpayOrder.id,
@@ -924,47 +769,44 @@ ${latestCharge <= 0
         razorpay_amount: razorpayOrder.amount,
         handler: async (paymentResponse: any) => {
           try {
-            const verifyRes = await fetch(
-              `${BASE_URL}/payment/verify-payment`,
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  razorpay_payment_id: paymentResponse.razorpay_payment_id,
-                  razorpay_order_id: paymentResponse.razorpay_order_id,
-                  razorpay_signature: paymentResponse.razorpay_signature,
-                  clientorderID,
-                  orderinfo: data.orderinfo,
-                  orderData: {
-                    brandId,
-                    restaurantName,
-                    userId: currentUser.id,
-                    items,
-                    customer: {
-                      email: currentUser.email,
-                      name: currentUser.name,
-                      address: `${deliveryAddress.flatNo}, ${deliveryAddress.fullAddress}`,
-                      phone: currentUser.phone,
-                      latitude: deliveryAddress.coordinates?.lat?.toString() ?? "",
-                      longitude: deliveryAddress.coordinates?.lng?.toString() ?? "",
-                      city: extractCity(deliveryAddress),
-                      state: deliveryAddress.state || "Karnataka",
-                    },
-                    deliveryAddress,
-                    pricing,
-                    pickup_details: {
-                      name: restaurantName,
-                      contact_number: outletLocation?.contact ?? "",
-                      latitude: String(RESTAURANT_LAT),
-                      longitude: String(RESTAURANT_LNG),
-                      address: outletLocation?.address ?? "",
-                      city: outletLocation?.city ?? "Bangalore",
-                      state: deliveryAddress.state || "Karnataka",
-                    },
+            const verifyRes = await fetch(`${BASE_URL}/payment/verify-payment`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                razorpay_payment_id: paymentResponse.razorpay_payment_id,
+                razorpay_order_id: paymentResponse.razorpay_order_id,
+                razorpay_signature: paymentResponse.razorpay_signature,
+                clientorderID,
+                orderinfo: data.orderinfo,
+                orderData: {
+                  brandId,
+                  restaurantName,
+                  userId: currentUser.id,
+                  items,
+                  customer: {
+                    email: currentUser.email,
+                    name: currentUser.name,
+                    address: `${deliveryAddress.flatNo}, ${deliveryAddress.fullAddress}`,
+                    phone: currentUser.phone,
+                    latitude: deliveryAddress.coordinates?.lat?.toString() ?? "",
+                    longitude: deliveryAddress.coordinates?.lng?.toString() ?? "",
+                    city: extractCity(deliveryAddress),
+                    state: deliveryAddress.state || "Karnataka",
                   },
-                }),
-              },
-            );
+                  deliveryAddress,
+                  pricing,
+                  pickup_details: {
+                    name: restaurantName,
+                    contact_number: outletLocation?.contact ?? "",
+                    latitude: String(RESTAURANT_LAT),
+                    longitude: String(RESTAURANT_LNG),
+                    address: outletLocation?.address ?? "",
+                    city: outletLocation?.city ?? "Bangalore",
+                    state: deliveryAddress.state || "Karnataka",
+                  },
+                },
+              }),
+            });
 
             const verifyData = await verifyRes.json();
 
@@ -974,35 +816,36 @@ ${latestCharge <= 0
               return;
             }
 
+            // ✅ Claim coupon AFTER successful payment — non-blocking
+            if (appliedCoupon && currentUser?.id) {
+              try {
+                await apiClaimDiscount(appliedCoupon.discount_code, currentUser.id);
+              } catch (err) {
+                console.error("Coupon claim failed:", err);
+              }
+            }
+
             setLastOrderId(clientorderID);
             await refreshCurrentUser();
             clearCart();
             setView("confirmation");
-          } catch (err) {
+          } catch {
             alert("Payment succeeded but order creation failed.");
           } finally {
             setIsProcessing(false);
           }
         },
-
         modal: {
           ondismiss: async () => {
             setIsProcessing(false);
-
             try {
-              await apiCancelOrderOnPaymentFailed(
-                brandId,
-                clientorderID,
-                "Payment cancelled by user",
-              );
+              await apiCancelOrderOnPaymentFailed(brandId, clientorderID, "Payment cancelled by user");
             } catch (err) {
               console.error("Payment-failed cancel error", err);
             }
-
             alert("Payment cancelled. You can try again.");
           },
         },
-
         prefill: {
           name: currentUser.name,
           email: currentUser.email,
@@ -1015,15 +858,10 @@ ${latestCharge <= 0
 
       rzp.on("payment.failed", async () => {
         try {
-          await apiCancelOrderOnPaymentFailed(
-            brandId,
-            clientorderID,
-            "Payment failed",
-          );
+          await apiCancelOrderOnPaymentFailed(brandId, clientorderID, "Payment failed");
         } catch (err) {
           console.error("Payment-failed cancel error", err);
         }
-
         alert("Payment failed. Please try again.");
         setIsProcessing(false);
       });
@@ -1045,9 +883,7 @@ ${latestCharge <= 0
     }
   };
 
-  const checkServiceabilityForAddress = async (
-    address: DeliveryAddress
-  ): Promise<boolean> => {
+  const checkServiceabilityForAddress = async (address: DeliveryAddress): Promise<boolean> => {
     if (!address?.coordinates) {
       setIsAddressServiceable(false);
       setAddressError("Invalid address coordinates.");
@@ -1057,39 +893,21 @@ ${latestCharge <= 0
     try {
       const { lat, lng } = address.coordinates;
 
-      const resp = await apiCheckServiceAvailability(
-        RESTAURANT_LAT,
-        RESTAURANT_LNG,
-        lat,
-        lng
-      );
-      console.log("=== SERVICE API RESPONSE (FORM) ===");
-      console.log(JSON.stringify(resp, null, 2));
-
+      const resp = await apiCheckServiceAvailability(RESTAURANT_LAT, RESTAURANT_LNG, lat, lng);
       const serviceable = resp?.data?.serviceable || resp?.serviceable || {};
-
-      const locationOk =
-        serviceable.locationServiceAble ??
-        serviceable.locationServiceable ??
-        false;
-
-      const riderOk =
-        serviceable.riderServiceAble ??
-        serviceable.riderServiceable ??
-        false;
+      const locationOk = serviceable.locationServiceAble ?? serviceable.locationServiceable ?? false;
+      const riderOk = serviceable.riderServiceAble ?? serviceable.riderServiceable ?? false;
 
       if (!locationOk && !riderOk) {
         setIsAddressServiceable(false);
         setAddressError("Delivery is not available in this location.");
         return false;
       }
-
       if (!locationOk) {
         setIsAddressServiceable(false);
         setAddressError("Location is not deliverable.");
         return false;
       }
-
       if (!riderOk) {
         setIsAddressServiceable(false);
         setAddressError("Rider not available in this location.");
@@ -1098,44 +916,16 @@ ${latestCharge <= 0
 
       setIsAddressServiceable(true);
       setAddressError("");
-      const chargeResp =
-        await apiGetDeliveryCharge({
 
-          restaurantLat:
-            RESTAURANT_LAT,
+      const chargeResp = await apiGetDeliveryCharge({
+        restaurantLat: RESTAURANT_LAT,
+        restaurantLng: RESTAURANT_LNG,
+        deliveryLat: lat,
+        deliveryLng: lng,
+      });
 
-          restaurantLng:
-            RESTAURANT_LNG,
-
-          deliveryLat:
-            lat,
-
-          deliveryLng:
-            lng
-
-        });
-
-      setDeliveryCharge(
-
-        Number(
-          chargeResp?.data
-            ?.delivery_charge || 0
-        )
-
-      );
-
-      setDeliveryDistance(
-
-        Number(
-          chargeResp?.data
-            ?.distance_km || 0
-        )
-
-      );
-
-
-
-
+      setDeliveryCharge(Number(chargeResp?.data?.delivery_charge || 0));
+      setDeliveryDistance(Number(chargeResp?.data?.distance_km || 0));
 
       return true;
     } catch (error) {
@@ -1153,9 +943,7 @@ ${latestCharge <= 0
     const isBangalore = checkIsBangalore(newAddressData.fullAddress);
     if (!isBangalore) {
       setIsAddressServiceable(false);
-      setAddressError(
-        "Currently, our culinary delights travel exclusively within Bangalore.",
-      );
+      setAddressError("Currently, our culinary delights travel exclusively within Bangalore.");
       return;
     }
 
@@ -1199,54 +987,30 @@ ${latestCharge <= 0
 
                   return (
                     <div key={itemKey} className="flex items-center gap-4">
-                      <img
-                        src={item.item_image_url}
-                        alt={item.itemname}
-                        className="w-16 h-16 rounded-md object-cover"
-                      />
+                      <img src={item.item_image_url} alt={item.itemname} className="w-16 h-16 rounded-md object-cover" />
 
                       <div className="flex-grow">
                         <p className="font-semibold text-white">{item.itemname}</p>
-                        <p className="text-sm text-gray-400">
-                          ₹{Number(item.unit_price).toFixed(2)}
-                        </p>
+                        <p className="text-sm text-gray-400">₹{Number(item.unit_price).toFixed(2)}</p>
 
-                        {Array.isArray(calculatedTaxByItemId[itemKey]) &&
-                          calculatedTaxByItemId[itemKey].length > 0 && (
-                            <p className="text-xs text-gray-500">
-                              GST: ₹{getItemGST(item).toFixed(2)}
-                            </p>
-                          )}
+                        {Array.isArray(calculatedTaxByItemId[itemKey]) && calculatedTaxByItemId[itemKey].length > 0 && (
+                          <p className="text-xs text-gray-500">GST: ₹{getItemGST(item).toFixed(2)}</p>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-2">
-                        <button
-                          onClick={() =>
-                            updateItemQuantity(item.cartKey, item.quantity - 1)
-                          }
-                          className="text-gray-400 hover:text-white"
-                        >
+                        <button onClick={() => updateItemQuantity(item.cartKey, item.quantity - 1)} className="text-gray-400 hover:text-white">
                           <Icon type="minus-circle" className="w-6 h-6" />
                         </button>
 
-                        <span className="font-bold text-white w-5 text-center">
-                          {item.quantity}
-                        </span>
+                        <span className="font-bold text-white w-5 text-center">{item.quantity}</span>
 
-                        <button
-                          onClick={() =>
-                            updateItemQuantity(item.cartKey, item.quantity + 1)
-                          }
-                          className="text-gray-400 hover:text-white"
-                        >
+                        <button onClick={() => updateItemQuantity(item.cartKey, item.quantity + 1)} className="text-gray-400 hover:text-white">
                           <Icon type="plus-circle" className="w-6 h-6" />
                         </button>
                       </div>
 
-                      <button
-                        onClick={() => removeItem(item.cartKey)}
-                        className="text-red-400 hover:text-red-300"
-                      >
+                      <button onClick={() => removeItem(item.cartKey)} className="text-red-400 hover:text-red-300">
                         <Icon type="trash" className="w-5 h-5" />
                       </button>
                     </div>
@@ -1263,23 +1027,27 @@ ${latestCharge <= 0
             <div className="flex rounded-md shadow-sm border border-gray-600">
               <button
                 type="button"
-                onClick={() => { setIsLoginView(true); setAuthError(""); }}
+                onClick={() => {
+                  setIsLoginView(true);
+                  setAuthError("");
+                }}
                 className={`flex-1 p-2 rounded-l-md text-sm ${isLoginView ? "bg-cyan-600 text-white" : "bg-gray-700"}`}
               >
                 Login
               </button>
               <button
                 type="button"
-                onClick={() => { setIsLoginView(false); setAuthError(""); }}
+                onClick={() => {
+                  setIsLoginView(false);
+                  setAuthError("");
+                }}
                 className={`flex-1 p-2 rounded-r-md text-sm ${!isLoginView ? "bg-cyan-600 text-white" : "bg-gray-700"}`}
               >
                 Register
               </button>
             </div>
 
-            {authError && (
-              <p className="text-red-400 text-xs text-center">{authError}</p>
-            )}
+            {authError && <p className="text-red-400 text-xs text-center">{authError}</p>}
 
             {!isLoginView && (
               <>
@@ -1305,10 +1073,7 @@ ${latestCharge <= 0
                     setAuthFormData({ ...authFormData, phone: digitsOnly.slice(0, 10) });
                   }}
                   onKeyDown={(e) => {
-                    if (
-                      !/^[0-9]$/.test(e.key) &&
-                      !["Backspace", "Delete", "ArrowLeft", "ArrowRight", "Tab"].includes(e.key)
-                    ) {
+                    if (!/^[0-9]$/.test(e.key) && !["Backspace", "Delete", "ArrowLeft", "ArrowRight", "Tab"].includes(e.key)) {
                       e.preventDefault();
                     }
                   }}
@@ -1350,21 +1115,16 @@ ${latestCharge <= 0
         );
 
       case "address":
-        if (
-          !showAddressForm &&
-          currentUser?.addresses &&
-          currentUser.addresses.length > 0
-        ) {
+        if (!showAddressForm && currentUser?.addresses && currentUser.addresses.length > 0) {
           return (
             <div className="space-y-4 animate-fade-in">
               <div className="space-y-3">
                 {currentUser.addresses.map((addr) => (
                   <label
                     key={addr.id}
-                    className={`block p-4 rounded-lg border cursor-pointer transition-all ${selectedAddressId === addr.id
-                      ? "border-cyan-500 bg-cyan-900/20"
-                      : "border-gray-600 bg-gray-700/50 hover:border-gray-500"
-                      }`}
+                    className={`block p-4 rounded-lg border cursor-pointer transition-all ${
+                      selectedAddressId === addr.id ? "border-cyan-500 bg-cyan-900/20" : "border-gray-600 bg-gray-700/50 hover:border-gray-500"
+                    }`}
                   >
                     <div className="flex items-start gap-3">
                       <input
@@ -1378,15 +1138,11 @@ ${latestCharge <= 0
                         <div className="flex justify-between">
                           <p className="font-semibold text-white">{addr.flatNo}</p>
                           {addr.isDefault && (
-                            <span className="bg-cyan-900/50 text-cyan-300 text-xs px-2 py-0.5 rounded-full">
-                              Default
-                            </span>
+                            <span className="bg-cyan-900/50 text-cyan-300 text-xs px-2 py-0.5 rounded-full">Default</span>
                           )}
                         </div>
                         <p className="text-sm text-gray-300 mt-1">{addr.fullAddress}</p>
-                        {addr.landmark && (
-                          <p className="text-xs text-gray-400 mt-1">Landmark: {addr.landmark}</p>
-                        )}
+                        {addr.landmark && <p className="text-xs text-gray-400 mt-1">Landmark: {addr.landmark}</p>}
                       </div>
                     </div>
                   </label>
@@ -1411,9 +1167,7 @@ ${latestCharge <= 0
                 onClick={async () => {
                   if (!selectedAddressId || !currentUser) return;
 
-                  const selectedAddress = currentUser.addresses?.find(
-                    (a) => a.id === selectedAddressId,
-                  );
+                  const selectedAddress = currentUser.addresses?.find((a) => a.id === selectedAddressId);
 
                   setIsProcessing(true);
                   try {
@@ -1436,9 +1190,7 @@ ${latestCharge <= 0
           return (
             <form onSubmit={handleAddNewAddressSubmit} className="space-y-4 animate-fade-in">
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Delivery Location
-                </label>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Delivery Location</label>
                 <div className="relative">
                   <Icon type="map-pin" className="absolute left-3 top-3 w-5 h-5 text-gray-400" />
                   <input
@@ -1452,10 +1204,9 @@ ${latestCharge <= 0
                       setIsAddressServiceable(true);
                       setAddressError("");
                     }}
-                    className={`w-full bg-gray-700 p-3 pl-10 rounded-md border ${!isAddressServiceable
-                      ? "border-red-500 focus:ring-red-500"
-                      : "border-gray-600 focus:ring-cyan-500"
-                      } focus:ring-2 focus:outline-none text-white`}
+                    className={`w-full bg-gray-700 p-3 pl-10 rounded-md border ${
+                      !isAddressServiceable ? "border-red-500 focus:ring-red-500" : "border-gray-600 focus:ring-cyan-500"
+                    } focus:ring-2 focus:outline-none text-white`}
                   />
                 </div>
                 {!isAddressServiceable && (
@@ -1466,9 +1217,7 @@ ${latestCharge <= 0
                 )}
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Flat / House / Block No.
-                </label>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Flat / House / Block No.</label>
                 <input
                   type="text"
                   placeholder="e.g., Flat 402, Sunshine Apartments"
@@ -1479,9 +1228,7 @@ ${latestCharge <= 0
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Landmark (Optional)
-                </label>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Landmark (Optional)</label>
                 <input
                   type="text"
                   placeholder="e.g., Near City Hospital"
@@ -1515,12 +1262,7 @@ ${latestCharge <= 0
                 )}
                 <button
                   type="submit"
-                  disabled={
-                    !isAddressServiceable ||
-                    !newAddressData.fullAddress ||
-                    !newAddressData.flatNo ||
-                    isSavingAddress
-                  }
+                  disabled={!isAddressServiceable || !newAddressData.fullAddress || !newAddressData.flatNo || isSavingAddress}
                   className="flex-1 font-bold py-3 px-4 rounded-md bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex justify-center items-center"
                 >
                   {isSavingAddress ? <Spinner /> : "Save & Proceed"}
@@ -1530,33 +1272,100 @@ ${latestCharge <= 0
           );
         }
 
-      case "checkout":
+      case "checkout": {
         const finalAddress = getFinalDeliveryAddress();
         return (
           <form onSubmit={handlePlaceOrder}>
             <div className="space-y-4">
+              {/* Delivery To */}
               <div className="flex justify-between items-center border-b border-gray-700 pb-2">
                 <h3 className="text-lg font-semibold text-white">Delivery To</h3>
-                <button
-                  type="button"
-                  onClick={() => setView("address")}
-                  className="text-xs text-cyan-400 hover:underline"
-                >
+                <button type="button" onClick={() => setView("address")} className="text-xs text-cyan-400 hover:underline">
                   Change
                 </button>
               </div>
               <div className="bg-gray-700/50 p-3 rounded-md text-sm text-gray-300">
                 <p className="font-semibold text-white">{currentUser?.name}</p>
-                <p>{finalAddress?.flatNo}, {finalAddress?.fullAddress}</p>
-                {finalAddress?.landmark && (
-                  <p className="text-gray-400">Landmark: {finalAddress.landmark}</p>
-                )}
+                <p>
+                  {finalAddress?.flatNo}, {finalAddress?.fullAddress}
+                </p>
+                {finalAddress?.landmark && <p className="text-gray-400">Landmark: {finalAddress.landmark}</p>}
                 <p className="mt-1">Ph: {currentUser?.phone}</p>
               </div>
 
+              {/* ── Coupon Code ─────────────────────────────────────────── */}
+              <div className="space-y-2 pt-1">
+                <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                  <svg className="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M7 7h.01M7 3h5a1.99 1.99 0 011.414.586l7 7a2 2 0 010 2.828l-5 5a2 2 0 01-2.828 0l-7-7A1.99 1.99 0 013 10V5a2 2 0 012-2z"
+                    />
+                  </svg>
+                  Coupon Code
+                </h3>
+
+                {appliedCoupon ? (
+                  <div className="flex items-center justify-between bg-green-900/30 border border-green-700 rounded-md px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <svg className="w-4 h-4 text-green-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                      <div>
+                        <p className="text-sm font-bold text-green-300 font-mono tracking-widest">{appliedCoupon.discount_code}</p>
+                        <p className="text-xs text-green-400">
+                          {appliedCoupon.discount_percentage}% off applied — saving ₹{discountAmount.toFixed(2)}
+                        </p>
+                      </div>
+                    </div>
+                    <button type="button" onClick={handleRemoveCoupon} className="text-red-400 hover:text-red-300 text-sm font-semibold transition-colors">
+                      Remove
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Enter coupon code"
+                      value={couponCode}
+                      onChange={(e) => {
+                        setCouponCode(e.target.value.toUpperCase());
+                        setCouponError("");
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleApplyCoupon();
+                        }
+                      }}
+                      className="flex-1 bg-gray-700 text-white border border-gray-600 rounded-md px-3 py-2 text-sm font-mono tracking-widest uppercase focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleApplyCoupon}
+                      disabled={isApplyingCoupon || !couponCode.trim()}
+                      className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-md transition-colors flex items-center gap-1 min-w-[72px] justify-center"
+                    >
+                      {isApplyingCoupon ? <Spinner className="w-4 h-4" /> : "Apply"}
+                    </button>
+                  </div>
+                )}
+
+                {couponError && (
+                  <p className="text-xs text-red-400 flex items-center gap-1">
+                    <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    {couponError}
+                  </p>
+                )}
+              </div>
+              {/* ─────────────────────────────────────────────────────────── */}
+
               {isAuthenticated && availablePoints > 0 && (
-                <div className="space-y-2 pt-2">
-                  <h3 className="text-lg font-semibold text-white">Redeem Loyalty Points</h3>
+                <div className="space-y-2 pt-1">
+                  <h3 className="text-base font-semibold text-white">Redeem Loyalty Points</h3>
                   <div className="bg-gray-700/50 p-3 rounded-md text-sm">
                     <p>
                       Available Points: <span className="font-bold">{availablePoints}</span>
@@ -1570,9 +1379,7 @@ ${latestCharge <= 0
                         onChange={(e) => setLoyaltyPointsToRedeem(Number(e.target.value))}
                         className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
                       />
-                      <span className="font-bold text-cyan-400 w-12 text-center">
-                        {loyaltyPointsToRedeem}
-                      </span>
+                      <span className="font-bold text-cyan-400 w-12 text-center">{loyaltyPointsToRedeem}</span>
                     </div>
                     <p className="text-xs text-gray-400 mt-1">1 point = ₹1 discount.</p>
                   </div>
@@ -1581,31 +1388,23 @@ ${latestCharge <= 0
 
               {paymentMethod === "upi" && (
                 <div className="p-4 bg-gray-700/50 rounded-md">
-                  <input
-                    type="text"
-                    placeholder="UPI ID (e.g., yourname@bank)"
-                    required
-                    className="w-full bg-gray-700 p-2 rounded-md border border-gray-600"
-                  />
+                  <input type="text" placeholder="UPI ID (e.g., yourname@bank)" required className="w-full bg-gray-700 p-2 rounded-md border border-gray-600" />
                 </div>
               )}
             </div>
           </form>
         );
+      }
 
       case "confirmation":
         return (
           <div className="text-center">
             <Icon type="check-circle" className="w-16 h-16 text-green-400 mx-auto mb-4" />
             <h3 className="text-2xl font-bold text-white">Thank you for your order!</h3>
-            <p className="text-gray-300 mt-2">
-              Your order has been received and is now being prepared.
-            </p>
+            <p className="text-gray-300 mt-2">Your order has been received and is now being prepared.</p>
             <div className="bg-gray-900/50 p-3 rounded-md text-center mt-6 border border-gray-700">
               <p className="text-sm text-gray-300">Your Order ID:</p>
-              <p className="text-lg font-mono font-bold text-white tracking-wider my-1">
-                {lastOrderId}
-              </p>
+              <p className="text-lg font-mono font-bold text-white tracking-wider my-1">{lastOrderId}</p>
               <p className="text-xs text-gray-400">
                 You can{" "}
                 <button
@@ -1623,14 +1422,8 @@ ${latestCharge <= 0
   };
 
   return (
-    <div
-      className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-[100] animate-fade-in"
-      onClick={handleClose}
-    >
-      <div
-        className="bg-gray-800 rounded-lg shadow-xl w-full max-w-lg max-h-[90vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-[100] animate-fade-in" onClick={handleClose}>
+      <div className="bg-gray-800 rounded-lg shadow-xl w-full max-w-lg max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
         <header className="flex justify-between items-center p-4 border-b border-gray-700">
           <h2 className="text-xl font-serif text-white">
             {view === "cart" && `Your Cart (${itemCount})`}
@@ -1654,9 +1447,18 @@ ${latestCharge <= 0
                 <span>₹{subtotal.toFixed(2)}</span>
               </div>
 
-              {discountAmount > 0 && (
+              {appliedCoupon && discountAmount > 0 && (
                 <div className="flex justify-between text-green-400">
-                  <span>Flat Discount</span>
+                  <span className="flex items-center gap-1">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M7 7h.01M7 3h5a1.99 1.99 0 011.414.586l7 7a2 2 0 010 2.828l-5 5a2 2 0 01-2.828 0l-7-7A1.99 1.99 0 013 10V5a2 2 0 012-2z"
+                      />
+                    </svg>
+                    Coupon ({appliedCoupon.discount_percentage}% off)
+                  </span>
                   <span className="font-semibold">- ₹{discountAmount.toFixed(2)}</span>
                 </div>
               )}
@@ -1680,47 +1482,17 @@ ${latestCharge <= 0
                 <span>+ ₹{gstAfterDiscount.toFixed(2)}</span>
               </div>
               {view === "checkout" && (
-
                 <>
-
-                  <div className="
-flex
-justify-between
-text-gray-300
-">
-
-                    <span>
-                      Distance
-                    </span>
-
-                    <span>
-                      {deliveryDistance.toFixed(1)} KM
-                    </span>
-
+                  <div className="flex justify-between text-gray-300">
+                    <span>Distance</span>
+                    <span>{deliveryDistance.toFixed(1)} KM</span>
                   </div>
 
-                  <div className="
-flex
-justify-between
-text-gray-300
-">
-
-                    <span>
-                      Delivery Charges
-                    </span>
-
-                    <span>
-
-                      {deliveryCharge <= 0
-                        ? "Free"
-                        : `₹${deliveryCharge.toFixed(2)}`}
-
-                    </span>
-
+                  <div className="flex justify-between text-gray-300">
+                    <span>Delivery Charges</span>
+                    <span>{deliveryCharge <= 0 ? "Free" : `₹${deliveryCharge.toFixed(2)}`}</span>
                   </div>
-
                 </>
-
               )}
 
               <div className="flex justify-between text-white font-bold text-lg border-t border-gray-700 pt-2 mt-2">
@@ -1730,10 +1502,7 @@ text-gray-300
             </div>
 
             {view === "cart" && (
-              <button
-                onClick={handleProceed}
-                className="w-full bg-[var(--primary-color)] text-[var(--text-on-primary-color)] font-bold py-3 rounded-md"
-              >
+              <button onClick={handleProceed} className="w-full bg-[var(--primary-color)] text-[var(--text-on-primary-color)] font-bold py-3 rounded-md">
                 Proceed
               </button>
             )}

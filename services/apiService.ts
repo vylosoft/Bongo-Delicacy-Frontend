@@ -49,6 +49,94 @@ export const apiAddBrand = async (payload: BrandPayload) => {
   return res.json();
 };
 // ==========================
+// 🕐 OUTLET TIMINGS API
+// ==========================
+
+export interface OutletTimeSlot {
+  id?: string;
+  open_time: string;   // "HH:MM" 24hr
+  close_time: string;
+  is_closed: boolean;
+}
+
+export interface OutletDaySchedule {
+  day_of_week: number;   // 0=Sun … 6=Sat
+  day_name: string;
+  is_closed: boolean;
+  slots: OutletTimeSlot[];
+}
+
+export interface OutletTimingsResponse {
+  outlet_id: string;
+  is_open: boolean;
+  current_slot: { open: string; close: string } | null;
+  next_open: { day: string; time: string } | null;
+  schedule: OutletDaySchedule[];
+}
+
+/** GET /outlets/:outlet_id/timings — full weekly schedule + live status */
+export async function apiGetOutletTimings(outletId: string): Promise<OutletTimingsResponse> {
+  const res = await fetch(`${BASE_URL}/outlet/${outletId}/timings`);
+  const json = await res.json();
+  return json.data;
+}
+
+/** POST /outlets/:outlet_id/timings — save/replace one or more days */
+export async function apiSaveOutletTimings(
+  outletId: string,
+  days: Array<{
+    day_of_week: number;
+    is_closed: boolean;
+    slots?: Array<{ open_time: string; close_time: string }>;
+  }>
+) {
+  const res = await fetch(`${BASE_URL}/outlet/${outletId}/timings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ days }),
+  });
+  return res.json();
+}
+
+/** PATCH /outlets/:outlet_id/timings/toggle-day — flip a day on/off instantly */
+export async function apiToggleOutletDay(
+  outletId: string,
+  day_of_week: number,
+  is_closed: boolean
+) {
+  const res = await fetch(`${BASE_URL}/outlet/${outletId}/timings/toggle-day`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ day_of_week, is_closed }),
+  });
+  return res.json();
+}
+export const apiGetAllDiscounts = (page = 1, perPage = 20) =>
+  fetch(`${BASE_URL}/discount?page=${page}&per_page=${perPage}`).then(r => r.json());
+
+export const apiAddDiscount = (payload: { discount_code: string; discount_percentage: number }) =>
+  fetch(`${BASE_URL}/discount`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then(r => r.json());
+
+export const apiUpdateDiscount = (uuid: string, payload: any) =>
+  fetch(`${BASE_URL}/discount/${uuid}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then(r => r.json());
+/** POST /outlets/:outlet_id/timings/copy-to-all — copy one day's slots to all 7 days */
+export async function apiCopyTimingsToAllDays(outletId: string, source_day: number) {
+  const res = await fetch(`${BASE_URL}/outlet/${outletId}/timings/copy-to-all`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source_day }),
+  });
+  return res.json();
+}
+// ==========================
 // 🚚 DELIVERY CHARGES API
 // ==========================
 
@@ -115,7 +203,8 @@ export const apiUpdateDeliveryCharge = async (
 
   return res.json();
 };
-
+export const apiDeleteDiscount = (uuid: string) =>
+  fetch(`${BASE_URL}/discount/${uuid}`, { method: "DELETE" }).then(r => r.json());
 export const apiDeleteDeliveryCharge = async (
   id: string
 ) => {
@@ -435,8 +524,11 @@ export async function apiGetAdminCategoriesMenu(resturent_identifier: string) {
   return data.map((category: any) => ({
     category: category.name, // Frontend expects category
     items: (category.menus || []).map((item: any) => ({
+      itemid: item.itemid,
       name: item.itemname,
       isAvailable: item.active === "1", // check availability logic
+      cuisine_tag: item.cuisine_tag || null,
+      mood_tag: item.mood_tag || null,
     })),
   }));
 }
@@ -890,6 +982,7 @@ const mapDbOrderToType = (dbOrder: any): Order => ({
   deliveryInfo: dbOrder.delivery_info,
   externalOrderId: dbOrder.external_order_id,
   refundAmount: dbOrder.refund_amount,
+  delivery_message: dbOrder.delivery_message,
 });
 
 export const apiGetOrderById = async (
@@ -1465,7 +1558,19 @@ export const apiGetLiveMenu = async (
 ): Promise<RestaurantMenu | null> => {
   return getMenuFromStorage(restId);
 };
-
+export const apiUpdateMenuItemTags = async (payload: {
+  resturent_identifier: string;
+  item_id: string;
+  cuisine_tag: string | null;
+  mood_tag: string | null;
+}) => {
+  const res = await fetch(`${BASE_URL}/menu/item-tags`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+};
 export const apiUpdateItemAvailability = async (
   restId: string,
   itemName: string,

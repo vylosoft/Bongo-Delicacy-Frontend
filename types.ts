@@ -197,7 +197,15 @@ export interface Order {
 
   deliveryInfo?: DeliveryInfo;
 
-  externalOrderId?: string; // PetPooja order ID
+  delivery_message?: {
+    status: boolean;
+    message: string;
+    status_code: string;
+    taskId: string;
+    vendor_order_id: string;
+  } | null;
+
+  externalOrderId?: string;
 }
 
 /* =========================
